@@ -1,12 +1,11 @@
 #%%
 import sys
 import pandas as pd
-from alpha_eric import AlphaFactory
-from TAIndicator import TAIndicatorSettings
-from scraping_and_indicators import StockDataScraper
+from package.alpha_eric import AlphaFactory
+from package.TAIndicator import TAIndicatorSettings
+from package.scraping_and_indicators import StockDataScraper
 import pandas as pd
 import numpy as np
-from talib import abstract
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.impute import SimpleImputer
 from sklearn.decomposition import PCA
@@ -19,7 +18,7 @@ from sklearn.model_selection import GridSearchCV
 from filterpy.kalman import KalmanFilter
 from ta import add_all_ta_features
 
-data = pd.read_excel(r"C:\Users\user\OneDrive - Lehigh University\Desktop\investment\python\API\CME,MNQ0000\CME,MNQ0000_1_20240701_20241124.xlsx")
+data = pd.read_excel(r"C:\Users\user\OneDrive - Lehigh University\Desktop\investment\python\API\UN0000\UN0000_1_20240315_20241124.xlsx")
 data = data.set_index('date')
 
 alpha = AlphaFactory(data)
@@ -34,10 +33,13 @@ indicator_list = list(filtered_settings.keys())
 data_done2 = indicator2.add_specified_indicators(data_alpha, indicator_list, filtered_settings)
 data_done2 = add_all_ta_features(data_done2,open='open',high='high',low='low',close='close',volume='volume')
 
+
+
 label ='close'
+predict_time = 100
 X = data_done2.drop(columns=[label])
 
-y = data_done2[label].dropna()[:-20]
+y = data_done2[label].iloc[:-predict_time]
 
 X = X.replace([np.inf, -np.inf], np.nan)  # 将 inf 替换为 NaN，以便可以使用 dropna() 删除它们
 X = X.dropna(axis=1, how='any')  # 删除包含 NaN 的列
@@ -69,11 +71,15 @@ y_smoothed_kalman = apply_kalman_filter(y)
 
 # Visualize the result
 plt.figure(figsize=(10, 6))
-plt.plot(data['close'], label="Original avg_return_after_20_days", color='blue')
+plt.plot(data['close'].iloc[:-20], label="Original avg_return_after_20_days", color='blue')
 plt.plot(y_smoothed_kalman, label="Smoothed by Kalman Filter", color='orange')
 plt.legend()
 plt.title("Kalman Filter Smoothing of Target Variable: profit_or_loss_after_20_days_pp")
 plt.show()
+
+# y_smoothed_kalman = (((y_smoothed_kalman.shift(-3) - y_smoothed_kalman)/y_smoothed_kalman)).iloc[:-20]
+
+
 # Create Date Features
 # Add year, month, day, weekday features
 X['day'] = data.index.day
@@ -84,11 +90,11 @@ X['hour'] = data.index.hour
 
 
 # 使用切片來獲取 data.index 中最後 20 個時間戳，提供未來使用
-future_time = data.index[-20:]
+future_time = data.index[-predict_time:]
 
 # 使用切片來保留不包括最後 20 行的索引
-X_future = X.tail(20)
-
+X_future = X.tail(predict_time)
+X = X.iloc[:-100]
 
 ####################### 篩選資料 #######################################
  
@@ -149,7 +155,7 @@ y_train = y_smoothed_kalman.iloc[-(train_time_lenght + test_interval):-test_inte
 X_test = X_reduced[-test_interval:]
 y_test = y_smoothed_kalman.iloc[-test_interval:].reset_index(drop=True)
 
-
+#%%
 
 import numpy as np
 import pandas as pd
@@ -215,7 +221,7 @@ lstm_optimizer = optim.Adam(lstm_model.parameters(), lr=learning_rate)
 X_train_tensor = torch.tensor(X_train_tab, dtype=torch.float32).to(device)
 y_train_tensor = torch.tensor(y_train_scaled, dtype=torch.float32).to(device)
 
-epochs = 800
+epochs = 400
 for epoch in range(epochs):
     lstm_model.train()
     lstm_optimizer.zero_grad()
@@ -297,9 +303,36 @@ plt.plot(y_test.index, y_test, label='Actual Values', color='blue')
 plt.plot(y_test.index, y_pred_lstm_rescaled, label='Predicted Values - LSTM', color='orange')
 plt.plot(y_test.index, y_pred_tabnet_rescaled, label='Predicted Values - TabNet', color='green')
 plt.plot(y_test.index, y_pred_ensemble_rescaled, label='Predicted Values - Ensemble', color='red')
+plt.plot(y_test.index, y[-test_interval:], label='Close', color='black')
 plt.xlabel('Index')
 plt.ylabel('prices')
 plt.title('Actual vs Predicted Values - LSTM, TabNet, and Ensemble Models')
+plt.legend()
+plt.show()
+
+y_pred_series = pd.Series(y_pred_ensemble_rescaled)
+def calculate_shifted_return(series, shift_period):
+    """
+    計算時間序列在指定間隔之後的相對變化百分比。
+    
+    參數:
+    series (pd.Series): 要計算的時間序列
+    shift_period (int): 向前或向後滾動的間隔長度
+    
+    返回:
+    pd.Series: 計算出的相對變化百分比
+    """
+    shifted_series = series.shift(-shift_period)
+    shifted_return = (shifted_series - series) / series
+    return shifted_return
+
+
+plt.figure(figsize=(14, 8))
+plt.plot(y_test.index, calculate_shifted_return(y_pred_series,6), label='Predicted Values - Ensemble', color='red')
+plt.plot(y_test.index, calculate_shifted_return(y_test,6), label='Actual Values', color='blue')
+plt.xlabel('Index')
+plt.ylabel('30 min return rate')
+plt.title('Actual vs Predicted Values - LSTM, LightGBM, and Ensemble Models')
 plt.legend()
 plt.show()
 
@@ -308,14 +341,13 @@ plt.figure(figsize=(14, 8))
 plt.plot(future_time, y_future_lstm_rescaled, label='Future Predictions - LSTM', color='orange')
 plt.plot(future_time, y_future_tabnet_rescaled, label='Future Predictions - TabNet', color='green')
 plt.plot(future_time, y_future_ensemble_rescaled, label='Future Predictions - Ensemble', color='red')
+plt.plot(future_time, data_done2[label].iloc[-predict_time:], label='True value', color='blue')
 plt.xlabel('Future Time Index')
 plt.ylabel('prices')
 plt.xticks(rotation=90)
 plt.title('Future Predictions - LSTM, TabNet, and Ensemble Models')
 plt.legend()
 plt.show()
-
-
 
 import numpy as np
 import pandas as pd
@@ -382,7 +414,7 @@ lstm_optimizer = optim.Adam(lstm_model.parameters(), lr=learning_rate)
 X_train_tensor = torch.tensor(X_train_tab, dtype=torch.float32).to(device)
 y_train_tensor = torch.tensor(y_train_scaled, dtype=torch.float32).to(device)
 
-epochs = 800
+epochs = 400
 for epoch in range(epochs):
     lstm_model.train()
     lstm_optimizer.zero_grad()
@@ -460,8 +492,35 @@ plt.plot(y_test.index, y_test, label='Actual Values', color='blue')
 plt.plot(y_test.index, y_pred_lstm_rescaled, label='Predicted Values - LSTM', color='orange')
 plt.plot(y_test.index, y_pred_lgbm_rescaled, label='Predicted Values - LightGBM', color='purple')
 plt.plot(y_test.index, y_pred_ensemble_rescaled, label='Predicted Values - Ensemble', color='red')
+plt.plot(y_test.index, y[-test_interval:], label='Close', color='black')
 plt.xlabel('Index')
 plt.ylabel('prices')
+plt.title('Actual vs Predicted Values - LSTM, LightGBM, and Ensemble Models')
+plt.legend()
+plt.show()
+
+y_pred_series = pd.Series(y_pred_ensemble_rescaled)
+def calculate_shifted_return(series, shift_period):
+    """
+    計算時間序列在指定間隔之後的相對變化百分比。
+    
+    參數:
+    series (pd.Series): 要計算的時間序列
+    shift_period (int): 向前或向後滾動的間隔長度
+    
+    返回:
+    pd.Series: 計算出的相對變化百分比
+    """
+    shifted_series = series.shift(-shift_period)
+    shifted_return = (shifted_series - series) / series
+    return shifted_return
+
+
+plt.figure(figsize=(14, 8))
+plt.plot(y_test.index, calculate_shifted_return(y_pred_series,6), label='Predicted Values - Ensemble', color='red')
+plt.plot(y_test.index, calculate_shifted_return(y_test,6), label='Actual Values', color='blue')
+plt.xlabel('Index')
+plt.ylabel('30 min return rate')
 plt.title('Actual vs Predicted Values - LSTM, LightGBM, and Ensemble Models')
 plt.legend()
 plt.show()
@@ -471,6 +530,7 @@ plt.figure(figsize=(14, 8))
 plt.plot(future_time, y_future_lstm_rescaled, label='Future Predictions - LSTM', color='orange')
 plt.plot(future_time, y_future_lgbm_rescaled, label='Future Predictions - LightGBM', color='purple')
 plt.plot(future_time, y_future_ensemble_rescaled, label='Future Predictions - Ensemble', color='red')
+plt.plot(future_time, data_done2[label].iloc[-predict_time:], label='True value', color='blue')
 plt.xlabel('Future Time Index')
 plt.ylabel('prices')
 plt.xticks(rotation=90)
