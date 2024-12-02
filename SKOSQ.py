@@ -14,9 +14,9 @@ import comtypes.gen.SKCOMLib as sk
 # %%
 # login ID and PW
 # 身份證
-ID = ''
+ID = 'F130659713'
 # 密碼
-PW = ''
+PW = 'eric1234'
 print(datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S,"), 'Set ID and PW')
 
 
@@ -240,7 +240,7 @@ class Scraping_HistKline():
 
 test = Scraping_HistKline()
 #%%
-time_list = {'time1':["20240701", "20241124"]}
+time_list = {'time1':["20241120", "20241124"]}
 min_str = [1,5,60]
 
 for time in time_list:

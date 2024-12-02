@@ -726,7 +726,7 @@ class AlphaFactory:
         new_columns = {}
         for day in days:
             return_open_close = (self.data['close'] - self.data['open']).rolling(window=day).mean()
-            new_columns[f'disposition_effect_{day}'] = return_open_close * disposition_effect_factor
+            new_columns[f'disposition_effect_2_{day}'] = return_open_close * disposition_effect_factor
         
         # Use pd.concat to add new columns to the DataFrame
         self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
@@ -811,7 +811,7 @@ class AlphaFactory:
         new_columns = {}
         for day in days:
             anchoring_effect = self.data['open'].rolling(window=day).mean() * anchoring_factor
-            new_columns[f'anchoring_{day}'] = anchoring_effect
+            new_columns[f'anchoring_ori_{day}'] = anchoring_effect
         self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
         self.data = self.data.copy()
         return self.data
@@ -1305,22 +1305,38 @@ class AlphaFactory:
 
     def alpha67(self, days=list, anticipation_effect_factor=0.5):
         """
-        The alpha is based on anticipation, where traders make decisions in advance of expected events.
-        We calculate the anticipated effect of volume on future price changes.
+        改良後的 Alpha67：針對最新數據適配，避免因滾動窗口不足導致數據無法使用。
 
-        Parameter:
-        - days (list): the time intervals for calculating anticipation effect
-        - anticipation_effect_factor (float): factor to scale anticipation effect (default is 0.5)
+        Parameters:
+        - days (list): 時間間隔 (分鐘) 用於計算滾動特徵
+        - anticipation_effect_factor (float): 因子，用於縮放預期影響（默認為0.5）
 
-        Output:
-        - df (pd.Dataframe): return the input df with alpha series
+        Returns:
+        - df (pd.DataFrame): 返回包含特徵的數據
         """
         for day in days:
-            future_price_change = self.data['close'].pct_change(-day)
-            current_volume = self.data['volume']
-            self.data[f'anticipation_effect_{day}'] = (future_price_change * current_volume) * anticipation_effect_factor
-        self.data = self.data.copy()  # Defragment the DataFrame to improve performance
+            # 滾動窗口的歷史百分比變化（適配邊界情況）
+            historical_price_change = (
+                self.data["close"]
+                .pct_change(day)
+                .rolling(window=min(day, len(self.data)))  # 使用可用窗口長度
+                .mean()
+            )
+            
+            # 如果窗口不足，用過去的均值或插值估算
+            historical_price_change.fillna(historical_price_change.mean(), inplace=True)
+            
+            current_volume = self.data["volume"]
+            
+            # 預期影響特徵計算
+            self.data[f"anticipation_effect_{day}"] = (
+                historical_price_change * current_volume
+            ) * anticipation_effect_factor
+
+        # 防止DataFrame內存碎片化
+        self.data = self.data.copy()
         return self.data
+
 
     def alpha68(self, days=list, lagged_volatility_factor=0.35):
         """
@@ -2104,7 +2120,672 @@ class AlphaFactory:
             signal = macd.ewm(span=day // 2, adjust=False).mean()
             self.data[f'macd_reversal_{day}'] = np.where(macd > signal, 1, 0)
         return self.data    
-    
+
+
+    def alpha111(self, days=list, anticipation_effect_factor=1.0):
+        """
+        Alpha indicator that uses Bollinger Bands, volume moving average, and price range.
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        """
+        for day in days:
+            # 获取数据
+            high = self.data['high']
+            low = self.data['low']
+            close = self.data['close']
+            volume = self.data['volume']
+            
+            # 计算收盘价的简单移动平均（SMA）
+            sma_close = close.rolling(window=day).mean()
+            
+            # 计算布林带上下轨
+            rolling_std = close.rolling(window=day).std()
+            upper_band = sma_close + 2 * rolling_std
+            lower_band = sma_close - 2 * rolling_std
+            bb_percent = (close - lower_band) / (upper_band - lower_band)
+            
+            # 计算成交量的移动平均
+            volume_mean = volume.rolling(window=day).mean()
+            
+            # 计算价格变动（高低差）
+            price_range = high - low
+            
+            # 计算alpha因子
+            alpha = (bb_percent * volume_mean * price_range) * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha111_{day}'] = alpha
+        return self.data
+
+
+
+
+    def alpha112(self, days=[10, 20], volume_window=15, bb_window=20, anticipation_effect_factor=0.6):
+        """
+        Alpha112：綜合多個技術指標來捕捉價格變動趨勢。
+        
+        參數:
+        - days (list): 用於計算不同時間窗口的時間間隔。
+        - volume_window (int): 成交量的滾動窗口週期。
+        - bb_window (int): 布林帶的滾動窗口週期。
+        - anticipation_effect_factor (float): 因子，用於縮放預期影響（默認為0.6）。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特徵的數據。
+        """
+        for day in days:
+            # 計算短期和長期指數移動平均線 (EMA)
+            ema_short = self.data['close'].ewm(span=day, min_periods=1).mean()
+            ema_long = self.data['close'].ewm(span=day*2, min_periods=1).mean()  # 假設長期為短期的兩倍
+            macd = ema_short - ema_long
+
+            # 計算布林帶上下界
+            rolling_mean = self.data['close'].rolling(window=bb_window).mean()
+            rolling_std = self.data['close'].rolling(window=bb_window).std()
+            bb_upper = rolling_mean + (2 * rolling_std)
+            bb_lower = rolling_mean - (2 * rolling_std)
+            bb_width = bb_upper - bb_lower
+
+            # 計算成交量的滾動平均值
+            volume_mean = self.data['volume'].rolling(window=volume_window).mean()
+
+            # 綜合計算：考慮價格變動的綜合因子
+            self.data[f'alpha112_{day}'] = (
+                macd * bb_width * volume_mean
+            ) * anticipation_effect_factor
+
+        # 防止DataFrame內存碎片化
+        self.data = self.data.copy()
+        return self.data
+
+    def alpha113(self, days=list, anticipation_effect_factor=1.0):
+        """
+        Alpha indicator that uses price range and volume moving average.
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        """
+        for day in days:
+            # 获取数据
+            high = self.data['high']
+            low = self.data['low']
+            close = self.data['close']
+            volume = self.data['volume']
+            
+            # 计算价格变动（高低差）
+            price_range = high - low
+            
+            # 计算收盘价与高低差的比例
+            price_ratio = close / price_range
+            
+            # 计算成交量的移动平均
+            volume_mean = volume.rolling(window=day).mean()
+            
+            # 计算alpha因子
+            alpha = (price_ratio * volume_mean) * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha113_{day}'] = alpha
+        return self.data
+
+
+    def alpha114(self, days=[5, 10, 20], volume_window=10, std_window=20, anticipation_effect_factor=0.8):
+        """
+        Alpha114：綜合布林帶、成交量和價格波動的修正因子。
+        
+        參數:
+        - days (list): 用於計算不同時間窗口的時間間隔。
+        - volume_window (int): 成交量的滾動窗口週期。
+        - std_window (int): 用於計算價格標準差的滾動窗口。
+        - anticipation_effect_factor (float): 因子，用於縮放預期影響（默認為0.8）。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特徵的數據。
+        """
+        for day in days:
+            # 計算布林帶百分比
+            rolling_mean = self.data['close'].rolling(window=day).mean()
+            rolling_std = self.data['close'].rolling(window=std_window).std()
+            bb_upper = rolling_mean + (2 * rolling_std)
+            bb_lower = rolling_mean - (2 * rolling_std)
+            bb_percent = (self.data['close'] - bb_lower) / (bb_upper - bb_lower)
+
+            # 計算成交量的滾動平均值
+            volume_mean = self.data['volume'].rolling(window=volume_window).mean()
+
+            # 綜合計算：布林帶和成交量的影響
+            self.data[f'alpha114_{day}'] = (
+                bb_percent * volume_mean
+            ) * anticipation_effect_factor
+
+        # 防止DataFrame內存碎片化
+        self.data = self.data.copy()
+        return self.data
+
+    def alpha115(self, days=[10, 20], volume_window=10, tscore_window=30, anticipation_effect_factor=0.6):
+        """
+        Alpha115：結合價格波動（t分數）和成交量，預測價格跳空。
+        
+        參數:
+        - days (list): 用於計算不同時間窗口的時間間隔。
+        - volume_window (int): 成交量的滾動窗口週期。
+        - tscore_window (int): 用於計算 t 分數的滾動窗口週期。
+        - anticipation_effect_factor (float): 因子，用於縮放預期影響（默認為0.6）。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特徵的數據。
+        """
+        for day in days:
+            # 計算滾動的t分數
+            rolling_mean = self.data['close'].rolling(window=tscore_window).mean()
+            rolling_std = self.data['close'].rolling(window=tscore_window).std()
+            tscore = (self.data['close'] - rolling_mean) / rolling_std
+
+            # 計算成交量的滾動平均值
+            volume_mean = self.data['volume'].rolling(window=volume_window).mean()
+
+            # 綜合計算：t分數與成交量的影響
+            self.data[f'alpha115_{day}'] = (
+                tscore * volume_mean
+            ) * anticipation_effect_factor
+
+        # 防止DataFrame內存碎片化
+        self.data = self.data.copy()
+        return self.data   
+
+    def alpha116(self, days=list, anticipation_effect_factor=1.0):
+        """
+        Alpha indicator that calculates price range weighted by volume.
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        """
+        for day in days:
+            high = self.data['high']
+            low = self.data['low']
+            volume = self.data['volume']
+            
+            # 计算价格变动（高低差）
+            price_range = high - low
+            
+            # 计算成交量的移动平均
+            volume_mean = volume.rolling(window=day).mean()
+            
+            # 计算alpha116：成交量加权的价格变动
+            alpha = (price_range * volume_mean) * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha116_{day}'] = alpha
+        return self.data
+
+
+    def alpha117(self, days=list, anticipation_effect_factor=1.0):
+        """
+        Alpha indicator that uses price momentum and volume.
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        """
+        for day in days:
+            high = self.data['high']
+            low = self.data['low']
+            close = self.data['close']
+            volume = self.data['volume']
+            
+            # 计算价格动量（收盘价的差异）
+            price_momentum = close.diff(day)
+            
+            # 计算成交量的移动平均
+            volume_mean = volume.rolling(window=day).mean()
+            
+            # 计算alpha117：价格动量与成交量的加权组合
+            alpha = (price_momentum * volume_mean) * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha117_{day}'] = alpha
+        return self.data
+
+    def alpha118(self, days=list, anticipation_effect_factor=1.0):
+        """
+        Alpha indicator using Bollinger Bands and volume with adjusted weights.
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        """
+        for day in days:
+            high = self.data['high']
+            low = self.data['low']
+            close = self.data['close']
+            volume = self.data['volume']
+            
+            # 计算收盘价的简单移动平均
+            sma_close = close.rolling(window=day).mean()
+            
+            # 计算布林带的上下轨
+            rolling_std = close.rolling(window=day).std()
+            upper_band = sma_close + 2 * rolling_std
+            lower_band = sma_close - 2 * rolling_std
+            bb_percent = (close - lower_band) / (upper_band - lower_band)
+            
+            # 计算成交量的移动平均
+            volume_mean = volume.rolling(window=day).mean()
+            
+            # 计算alpha118：布林带和成交量的加权组合
+            alpha = (bb_percent * volume_mean) * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha118_{day}'] = alpha
+        return self.data
+
+
+    def alpha119(self, days=list, anticipation_effect_factor=1.0):
+        """
+        Alpha indicator using price momentum and volume trend.
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        """
+        for day in days:
+            high = self.data['high']
+            low = self.data['low']
+            close = self.data['close']
+            volume = self.data['volume']
+            
+            # 计算价格动量（高低差的移动平均）
+            price_momentum = (high - low).rolling(window=day).mean()
+            
+            # 计算成交量的移动平均
+            volume_mean = volume.rolling(window=day).mean()
+            
+            # 计算alpha119：价格动量与成交量趋势的加权组合
+            alpha = (price_momentum * volume_mean) * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha119_{day}'] = alpha
+        return self.data
+
+
+    def alpha120(self, days=list, anticipation_effect_factor=1.0):
+        """
+        Alpha indicator combining price range and volume momentum.
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        """
+        for day in days:
+            high = self.data['high']
+            low = self.data['low']
+            close = self.data['close']
+            volume = self.data['volume']
+            
+            # 计算价格波动（高低差）
+            price_range = high - low
+            
+            # 计算成交量的动量（成交量差异）
+            volume_momentum = volume.diff(day)
+            
+            # 计算alpha120：价格波动与成交量动量的加权组合
+            alpha = (price_range * volume_momentum) * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha120_{day}'] = alpha
+        return self.data
+
+    def alpha121(self, days=list, anticipation_effect_factor=1.0):
+        """
+        Alpha indicator that detects price gaps and calculates the Z-score for price change after gap.
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        """
+        for day in days:
+            close = self.data['close']
+            
+            # 计算跳空：开盘与前一日收盘价的差值
+            gap = close.diff(1)
+            
+            # 计算价格变化的 Z 分数
+            mean_gap = gap.rolling(window=day).mean()
+            std_gap = gap.rolling(window=day).std()
+            z_score_gap = (gap - mean_gap) / std_gap
+            
+            # 计算 alpha121：跳空的 Z 分数加权
+            alpha = z_score_gap * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha121_{day}'] = alpha
+        return self.data
+
+    def alpha122(self, days=list, anticipation_effect_factor=1.0):
+        """
+        Alpha indicator that calculates the T-score for price gaps and pullback movements.
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        """
+        for day in days:
+            close = self.data['close']
+            
+            # 计算跳空：开盘与前一日收盘价的差值
+            gap = close.diff(1)
+            
+            # 计算价格回撤：当前价格与最大涨幅的比值
+            max_gap = gap.rolling(window=day).max()
+            pullback = gap / max_gap
+            
+            # 计算 T 分数
+            t_stat = (pullback - pullback.mean()) / pullback.std()
+            
+            # 计算 alpha122：T 分数加权
+            alpha = t_stat * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha122_{day}'] = alpha
+        return self.data
+
+    def alpha123(self, days=list, anticipation_effect_factor=1.0):
+        """
+        Alpha indicator that detects price gaps and volume anomalies using Z-scores.
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        """
+        for day in days:
+            close = self.data['close']
+            volume = self.data['volume']
+            
+            # 计算跳空：开盘与前一日收盘价的差值
+            gap = close.diff(1)
+            
+            # 计算成交量的 Z 分数
+            mean_volume = volume.rolling(window=day).mean()
+            std_volume = volume.rolling(window=day).std()
+            z_score_volume = (volume - mean_volume) / std_volume
+            
+            # 计算价格跳空的 Z 分数
+            mean_gap = gap.rolling(window=day).mean()
+            std_gap = gap.rolling(window=day).std()
+            z_score_gap = (gap - mean_gap) / std_gap
+            
+            # 结合 Z 分数
+            alpha = z_score_gap * z_score_volume * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha123_{day}'] = alpha
+        return self.data
+
+    def alpha124(self, days=list, anticipation_effect_factor=1.0):
+        """
+        Alpha indicator that combines price gap reversal and price momentum using T-scores.
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        """
+        for day in days:
+            close = self.data['close']
+            
+            # 计算跳空：开盘与前一日收盘价的差值
+            gap = close.diff(1)
+            
+            # 计算价格动量（收盘价差值）
+            momentum = close.diff(day)
+            
+            # 计算 T 分数
+            mean_gap = gap.rolling(window=day).mean()
+            std_gap = gap.rolling(window=day).std()
+            t_stat_gap = (gap - mean_gap) / std_gap
+            
+            mean_momentum = momentum.rolling(window=day).mean()
+            std_momentum = momentum.rolling(window=day).std()
+            t_stat_momentum = (momentum - mean_momentum) / std_momentum
+            
+            # 计算 alpha124：跳空反转与价格动量的加权
+            alpha = (t_stat_gap * t_stat_momentum) * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha124_{day}'] = alpha
+        return self.data
+
+    def alpha125(self, days=list, anticipation_effect_factor=1.0, rsi_threshold=70):
+        """
+        Alpha indicator that combines price gaps and RSI using Z-scores to detect overbought/oversold conditions.
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        - rsi_threshold (int): the threshold for detecting overbought conditions (default is 70)
+        """
+        for day in days:
+            close = self.data['close']
+            volume = self.data['volume']
+            
+            # 计算跳空：开盘与前一日收盘价的差值
+            gap = close.diff(1)
+            
+            # 计算 RSI
+            delta = close.diff(1)
+            gain = delta.where(delta > 0, 0)
+            loss = -delta.where(delta < 0, 0)
+            avg_gain = gain.rolling(window=day).mean()
+            avg_loss = loss.rolling(window=day).mean()
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+            
+            # 计算 RSI 的 Z 分数
+            mean_rsi = rsi.rolling(window=day).mean()
+            std_rsi = rsi.rolling(window=day).std()
+            z_score_rsi = (rsi - mean_rsi) / std_rsi
+            
+            # 计算跳空的 Z 分数
+            mean_gap = gap.rolling(window=day).mean()
+            std_gap = gap.rolling(window=day).std()
+            z_score_gap = (gap - mean_gap) / std_gap
+            
+            # 结合 Z 分数与 RSI
+            alpha = (z_score_gap * z_score_rsi) * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha125_{day}'] = alpha
+        return self.data
+
+    def alpha126(self, days=list, anticipation_effect_factor=3.0):
+        """
+        Alpha indicator that combines Fibonacci retracement levels and Golden Ratio (0.618).
+        Parameter:
+        - days (list): the time intervals for calculating indicators
+        - anticipation_effect_factor (float): a factor to adjust the result (default is 1.0)
+        """
+        for day in days:
+            close = self.data['close']
+            
+            # 计算当前周期的最高价和最低价
+            high = close.rolling(window=day).max()
+            low = close.rolling(window=day).min()
+            
+            # 计算费波那契回撤水平
+            fibonacci_levels = {
+                "level_0": low,
+                "level_236": low + 0.236 * (high - low),
+                "level_382": low + 0.382 * (high - low),
+                "level_50": low + 0.5 * (high - low),
+                "level_618": low + 0.618 * (high - low),
+                "level_786": low + 0.786 * (high - low),
+                "level_1": high
+            }
+            
+            # 黄金分割比例：0.618
+            golden_ratio = 0.618
+            
+            # 判断当前价格与黄金分割比例（0.618）和回撤水平的关系
+            fib_retracement = (close - fibonacci_levels["level_618"]) / (fibonacci_levels["level_1"] - fibonacci_levels["level_0"])
+            
+            # 计算 alpha126：黄金分割与费波那契回撤结合
+            alpha = fib_retracement * anticipation_effect_factor
+            
+            # 填充缺失值
+            alpha = alpha.fillna(0)
+            
+            # 将结果添加到数据中
+            self.data[f'alpha126_{day}'] = alpha
+        return self.data
+
+    def alpha127(self, days=list, threshold=2):
+        """
+        Calculate alpha127 using statistical deviation from historical price distribution.
+        
+        Parameters:
+        - days (list): List of time intervals for the calculation.
+        - threshold (float): Threshold for statistical significance, default is 3 (for 3-sigma rule).
+        """
+        new_columns = {}
+        
+        for day in days:
+            # Calculate rolling mean and rolling standard deviation
+            rolling_mean = self.data['close'].rolling(window=day).mean()
+            rolling_std = self.data['close'].rolling(window=day).std()
+            
+            # Calculate the deviation of the current price from the rolling mean
+            deviation = (self.data['close'] - rolling_mean) / (rolling_std + 1e-6)
+            
+            # Apply the threshold to capture significant deviations
+            alpha = (deviation.abs() > threshold).astype(int)  # 1 if significant deviation, 0 otherwise
+            
+            new_columns[f'alpha127_{day}'] = alpha
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+
+
+    def alpha128(self, days=list, volatility_scaler=2):
+        """
+        Calculate alpha128 using volatility and liquidity (trading volume) relationship.
+        
+        Parameters:
+        - days (list): List of time intervals for the calculation.
+        - volatility_scaler (float): Scaling factor for volatility (default is 1.0).
+        """
+        new_columns = {}
+        
+        for day in days:
+            # Calculate rolling standard deviation (volatility)
+            volatility = self.data['close'].pct_change().rolling(window=day).std()
+            
+            # Calculate volume-to-volatility ratio (liquidity factor)
+            liquidity_factor = self.data['volume'] / (volatility + 1e-6)  # Avoid division by zero
+            
+            # Apply scaling factor for volatility
+            alpha = liquidity_factor * volatility_scaler
+            
+            new_columns[f'alpha128_{day}'] = alpha
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+
+    def alpha129(self, days=list):
+        """
+        通过统计指标（波动率、自相关性、变异系数等）设计 alpha129。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        """
+        import numpy as np
+
+        new_columns = {}
+        
+        for day in days:
+            # 计算波动率（标准差）
+            volatility = self.data['close'].pct_change().rolling(window=day).std()
+
+            # 计算变异系数（变动的标准差与均值的比值）
+            mean_price = self.data['close'].rolling(window=day).mean()
+            cv = volatility / mean_price  # 变异系数 = 波动率 / 均值
+
+            # 计算自相关性（lag=1, 即与前一日的价格相关）
+            autocorr = self.data['close'].pct_change().rolling(window=day).apply(lambda x: x.autocorr(lag=1))
+
+            # 结合波动率、变异系数和自相关性进行加权求和生成 alpha129
+            alpha = (volatility + cv + autocorr) / 3  # 平均法，或根据不同情况加权
+            
+            # 存储新生成的 alpha129
+            new_columns[f'alpha129_{day}'] = alpha
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+
+
+
+
+    def alpha130(self, days=list, volatility_scaler=0.2, conformity_factor=1.0):
+        """
+        Calculate alpha130 with multiple days using risk perception and herd behavior.
+
+        Parameters:
+        - days (list): List of time intervals for which the calculations are to be done.
+        - volatility_scaler (float): A scaling factor for volatility (default is 0.2).
+        - conformity_factor (float): Factor that adjusts herd behavior (default is 1.0).
+        """
+        # Create a dictionary to hold all the new columns to be added to the DataFrame
+        new_columns = {}
+
+        for day in days:
+            # Calculate risk perception (avoiding division by zero or NaN)
+            rolling_volatility = self.data['close'].pct_change().rolling(window=day).std()
+            risk_perception = self.data['close'].pct_change(day) * (1 + volatility_scaler * rolling_volatility)
+            new_columns[f'risk_perception_{day}'] = risk_perception
+
+            # Calculate herd behavior
+            avg_movement = self.data['close'].rolling(window=day).mean()
+            herd_behavior = (self.data['close'] - avg_movement) * conformity_factor
+            new_columns[f'herd_behavior_{day}'] = herd_behavior
+
+            # Calculate alpha130
+            alpha = (self.data['close'] - avg_movement) / (rolling_volatility + 1e-6)  # Add small constant to avoid division by zero
+            new_columns[f'alpha130_{day}'] = alpha
+
+        # Concatenate all new columns to the original DataFrame in one go
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+
+        return self.data
+
 
     def add_all_alphas(self, days=[5, 10, 20, 60, 120, 240], custom_params=None):
         """
@@ -2134,3 +2815,7 @@ class AlphaFactory:
                     method(days=days, **params)
 
         return self.data
+    
+    
+
+#Rolling alpha 
