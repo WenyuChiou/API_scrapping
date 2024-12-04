@@ -139,6 +139,7 @@ for num, tt in enumerate(EventOSQ.temp):
 # Converting the processed data to a DataFrame
 df_processed_list = pd.DataFrame(processed_entries)
 
+#%%
 # Saving the DataFrame to an Excel file
 output_file_path = r'C:\Users\user\OneDrive - Lehigh University\Desktop\investment\python\scrapping\API\清單海期.xlsx'
 df_processed_list.to_excel(output_file_path, index=False)
@@ -217,7 +218,7 @@ class Scraping_HistKline():
                 'date': timestamp,
                 'open': open_price,
                 'high': high_price,
-                'low': low_price,
+                'low': low_price,""
                 'close': close_price,
                 'volume': volume
             }
@@ -240,13 +241,13 @@ class Scraping_HistKline():
 
 test = Scraping_HistKline()
 #%%
-time_list = {'time1':["20241120", "20241124"]}
+time_list = {'time1':["20241118", "20241128"]}
 min_str = [1,5,60]
 
 for time in time_list:
     start_date, end_date = time_list[time]
     for freq in min_str:
-        test.RequestKLineAMByDate("CME,MNQ0000",freq, start_date, end_date)
+        test.RequestKLineAMByDate("CME,RTY0000",freq, start_date, end_date)
         df = test.process_kline_data(EventOSQ.data, r"C:\Users\user\OneDrive - Lehigh University\Desktop\investment\python\API")
 
 

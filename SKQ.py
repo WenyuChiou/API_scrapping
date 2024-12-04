@@ -14,9 +14,9 @@ import comtypes.gen.SKCOMLib as sk
 # %%
 # login ID and PW
 # 身份證
-ID = ''
+ID = 'F130659713'
 # 密碼
-PW = ''
+PW = 'eric1234'
 print(datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S,"), 'Set ID and PW')
 
 
@@ -48,16 +48,145 @@ if 'skQ' not in globals():
 # 回報物件
 if 'skR' not in globals(): 
     skR = cc.CreateObject(sk.SKReplyLib, interface=sk.ISKReplyLib)
+import sys
+import pandas as pd
+from package.alpha_eric import AlphaFactory  # 假設您自定義的 AlphaFactory 在這個模塊中
+from package.TAIndicator import TAIndicatorSettings  # 假設 TAIndicator 設定在這個模塊中
+from package.scraping_and_indicators import StockDataScraper  # 假設爬取和指標工具在這個模塊中
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.impute import SimpleImputer
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import VarianceThreshold
+from sklearn.metrics import mean_squared_error, r2_score
+from lightgbm import LGBMRegressor
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.model_selection import GridSearchCV
+from filterpy.kalman import KalmanFilter
+from ta import add_all_ta_features
+import joblib
+import torch
+import torch.nn as nn
+from sklearn.exceptions import NotFittedError
+import warnings
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
+
+# Set device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+# class ResidualLSTMModel(nn.Module):
+#     def __init__(self, input_size, hidden_size, output_size, num_layers=3):
+#         super(ResidualLSTMModel, self).__init__()
+#         self.lstm1 = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+#         self.lstm2 = nn.LSTM(hidden_size, hidden_size, num_layers, batch_first=True)
+#         self.dropout = nn.Dropout(0.3)
+#         self.fc = nn.Linear(hidden_size, output_size)
+
+#     def forward(self, x):
+#         batch_size = x.size(0)
+#         h_0 = torch.zeros(self.lstm1.num_layers, batch_size, self.lstm1.hidden_size).to(x.device)
+#         c_0 = torch.zeros(self.lstm1.num_layers, batch_size, self.lstm1.hidden_size).to(x.device)
+
+#         out1, _ = self.lstm1(x, (h_0, c_0))
+        
+#         h_0_2 = torch.zeros(self.lstm2.num_layers, batch_size, self.lstm2.hidden_size).to(x.device)
+#         c_0_2 = torch.zeros(self.lstm2.num_layers, batch_size, self.lstm2.hidden_size).to(x.device)
+#         out2, _ = self.lstm2(out1, (h_0_2, c_0_2))
+
+#         # Residual connection
+#         residual = x[:, -1, :]  # Taking the last step for residual connection
+#         if residual.size(1) > out2.size(2):
+#             residual = residual[:, :out2.size(2)]  # Trim residual dimensions to match LSTM output dimensions
+#         elif residual.size(1) < out2.size(2):
+#             padding = torch.zeros((batch_size, out2.size(2) - residual.size(1))).to(x.device)
+#             residual = torch.cat((residual, padding), dim=1)  # Pad residual dimensions to match LSTM output dimensions
+#         out = out2[:, -1, :] + residual  # Add input as residual
+        
+#         out = self.dropout(out)
+#         out = self.fc(out)
+#         return out
+
+# # Load trained models and scalers
+# import dill
+
+# with open('TX_1min_model_5.pkl', 'rb') as f:
+#     saved_data = dill.load(f)
+
+# lstm_model = saved_data['lstm_model']
+# lgbm_model = saved_data['lgbm_model']
+# ensemble_model = saved_data['ensemble_model']
+# scaler_X = saved_data['scaler_X']
+# scaler_y = saved_data['scaler_y']
+
+
+data = pd.read_excel(r"C:\Users\user\OneDrive - Lehigh University\Desktop\investment\python\API\TX00\TX00_5_20241101_20241202.xlsx")
+data = data.set_index('date')
+# 刪除包含零的列（行）
+data = data.loc[~(data == 0).any(axis=1)]
+
+filter_name = pd.read_excel("highly_correlated_features.xlsx")
+filter_name = filter_name["Highly Correlated Features"].to_list()
+
+data_test=data['2024-11-20':'2024-12-02']
 # %%
 #Quote event class
+#Quote event class
+import pandas as pd
+from datetime import datetime, timedelta
+import time
+import joblib
+from sklearn.exceptions import NotFittedError
+import dill
+import requests
 class skQ_event:
-    def __init__(self):
+    def __init__(self,data_test):
         self.temp = []
         self.code = []       
         self.data = []
+        self.test = []
+        # 初始化字典來收集資料
+        self.ticks_data = {
+            'Datetime': [],
+            'price': [],
+            'volume': []
+        }
+         # 用來存儲最新的 5 分鐘 K 線資料
+        self.kline_data = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+
+        # 用來存儲所有收集的五分鐘K線資料
+        self.all_kline_data = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+
+
+        self.len = data_test.shape[0]
         
-        
-    
+        # 接收外部歷史數據
+        self.data_test = data_test
+
+        # 確保 data_test 的索引名稱和格式正確
+        self.data_test.index = pd.to_datetime(self.data_test.index, errors='coerce')
+        self.data_test.index.name = 'Datetime'
+        # 加載已經訓練好的模型
+        try:
+            with open('TX_1min_model_5.pkl', 'rb') as f:
+                saved_data = dill.load(f)
+            self.lstm_model = saved_data['lstm_model']
+            self.lgbm_model = saved_data['lgbm_model']
+            self.ensemble_model = saved_data['ensemble_model']
+            self.scaler_X = saved_data['scaler_X']
+            self.scaler_y = saved_data['scaler_y']
+            print("Models and scalers loaded successfully.")
+        except FileNotFoundError:
+            print("Trained model file not found. Please make sure 'TX_1min_model_5.pkl' is available.")
+            self.lstm_model = None
+            self.lgbm_model = None
+            self.ensemble_model = None
+            self.scaler_X = None
+            self.scaler_y = None
+            
     def OnConnection(self, nKind, nCode):
         """內期主機回報"""
         print(f'skOSQ_OnConnection nCode={nCode}, nKind={nKind}')
@@ -74,6 +203,234 @@ class skQ_event:
         self.data.append(bstrData.split(","))       
         
 
+    def OnNotifyTicksLONG(self, sMarketNo, nIndex, nPtr, nDate, nTimehms,
+                          nTimemillismicros, nBid, nAsk, nClose, nQty, nSimulate):
+        """
+        收集tick資料並進行處理
+        """
+        print(f"接收到 tick 數據: 日期={nDate}, 時間={nTimehms}, 成交價={nClose/100}, 成交量={nQty}")
+            
+        # 收集資料
+        datetime_str = f"{nDate}{nTimehms:06}"  # 格式化為 YYYYMMDDHHMMSS
+        price = nClose / 100  # 成交價格
+        volume = nQty  # 成交量
+
+        # 將資料添加到字典中
+        self.ticks_data['Datetime'].append(datetime_str)
+        self.ticks_data['price'].append(price)
+        self.ticks_data['volume'].append(volume)
+
+        # 直接更新 DataFrame
+        self.dataframe = pd.DataFrame(self.ticks_data)
+        self.dataframe['Datetime'] = pd.to_datetime(self.dataframe['Datetime'], format='%Y%m%d%H%M%S')
+        self.dataframe.set_index('Datetime', inplace=True)
+
+        # 每次收到tick數據都嘗試進行5分鐘重取樣和預測
+        self.resample_data()
+
+    def OnNotifyTicksLONG(self, sMarketNo, nIndex, nPtr, nDate, nTimehms, 
+                           nTimemillismicros, nBid, nAsk, nClose, nQty, nSimulate):
+        # 收集資料
+        datetime_str = f"{nDate}{nTimehms:06}"  # 格式化為 YYYYMMDDHHMMSS
+        price = nClose / 100  # 成交價格除以100  # 成交價格
+        volume = nQty  # 成交量
+        
+        # 將資料添加到字典中
+        self.ticks_data['Datetime'].append(datetime_str)
+        self.ticks_data['price'].append(price)
+        self.ticks_data['volume'].append(volume)
+        
+        # 直接更新 DataFrame
+        self.dataframe = pd.DataFrame(self.ticks_data)
+        self.dataframe['Datetime'] = pd.to_datetime(self.dataframe['Datetime'], format='%Y%m%d%H%M%S')
+        self.dataframe.set_index('Datetime', inplace=True)
+        
+        print(self.dataframe)
+
+        # 計算最新的 5 分鐘 K 線並保存
+        self.resample_data()
+
+    def resample_data(self):
+        """
+        將收集到的tick資料進行重取樣為5分鐘K線
+        """
+        print("正在進行 5 分鐘 K 線的重取樣...")
+        
+        # 進行 5 分鐘 K 線的重取樣
+        ohlcv = self.dataframe.resample('5T').agg({
+            'price': ['first', 'max', 'min', 'last'],  # open, high, low, close
+            'volume': 'sum'  # 成交量
+        })
+        
+        # 將每個重取樣的時間向前移動 5 分鐘，使其表示該五分鐘區間的結束時間
+        ohlcv.index = ohlcv.index + pd.Timedelta(minutes=5)
+        # 給列名稱加上正確的名稱
+        
+        ohlcv.columns = ['open', 'high', 'low', 'close', 'volume']
+
+        # 確保所有的 index 都是 datetime 格式
+        ohlcv.index = pd.to_datetime(ohlcv.index, errors='coerce')
+        ohlcv.index.name = 'Datetime'  # 確保索引名稱統一
+
+        # 確保 data_test 的索引統一
+        self.data_test.index = pd.to_datetime(self.data_test.index, errors='coerce')
+        self.data_test.index.name = 'Datetime'  # 確保索引名稱統一
+        
+    
+        # 檢查是否有新生成的五分鐘K線
+        if not ohlcv.empty:
+            # 比較新生成的 ohlcv 資料的行數與之前的行數
+            if hasattr(self, 'prev_ohlcv_row_count'):
+                prev_row_count = self.prev_ohlcv_row_count
+            else:
+                prev_row_count = 1
+
+            new_row_count = ohlcv.shape[0]  # 使用 row 數量進行比較
+            print(ohlcv)
+
+            # 確認是否有新增的五分鐘K線資料
+            if new_row_count > prev_row_count:
+                print(f"新五分鐘 K 線資料已生成，開始更新歷史數據。")
+
+                # 更新最新的 K 線資料，使用倒數第二個
+                latest_kline = ohlcv.iloc[[-2]]
+
+                # 合併最新的 K 線資料到歷史數據中，避免重複行
+                self.data_test = pd.concat([self.data_test, latest_kline]).sort_index()
+
+                # 確保索引統一成 datetime 格式，防止錯誤
+                self.data_test.index = pd.to_datetime(self.data_test.index, errors='coerce')
+                self.data_test.index.name = 'Datetime'  # 確保索引名稱一致
+
+                # 刪除重複的行（保留最新的）
+                self.data_test = self.data_test[~self.data_test.index.duplicated(keep='last')]
+
+                # 打印合併後的歷史數據，確認數據是否正確
+                print("更新後的歷史數據：")
+                print(self.data_test.tail())
+
+                # 更新行數計數器
+                self.prev_ohlcv_row_count = new_row_count
+
+                # 進行模型預測
+                self.predict_with_latest_kline()
+            else:
+                print("目前沒有新生成的五分鐘K線資料。等待更多的tick數據以完成新K線生成。")
+        else:
+            print("重取樣的結果為空，等待更多的 tick 資料...")
+            
+
+
+
+    def predict_with_latest_kline(self):
+        """
+        使用最新的五分鐘K線資料進行預測
+        """
+        print("正在使用最新的 5 分鐘 K 線數據進行預測...")
+        if self.lstm_model is not None:
+            try:
+                # 使用完整的歷史數據進行預測
+                new_data = self.data_test
+                
+                # 資料更新數量
+                update_row_num = new_data.shape[0] - self.len
+
+                # 前處理步驟
+                alpha = AlphaFactory(new_data)
+                indicator = TAIndicatorSettings()
+                indicator2 = StockDataScraper()
+
+                self.temp = new_data
+                # 添加所有 alpha 特徵
+                data_alpha = alpha.add_all_alphas()
+
+                # 添加技術指標
+                filtered_settings, timeperiod_only_indicators = indicator.process_settings()
+                data_done1 = indicator2.add_indicator_with_timeperiods(data_alpha, timeperiod_only_indicators,
+                                                                       timeperiods=[5, 10, 20, 50, 100, 200])
+                indicator_list = list(filtered_settings.keys())
+                data_done2 = indicator2.add_specified_indicators(data_alpha, indicator_list, filtered_settings)
+                data_done2 = add_all_ta_features(data_done2, open='open', high='high', low='low', close='close', volume='volume')
+
+                # 處理特徵和標籤
+                X = data_done2.drop(columns=['close'])
+                X = X.replace([np.inf, -np.inf], np.nan).dropna(axis=1, how='any')
+                
+                print(X)
+                # 添加日期特徵
+                X['day'] = new_data.index.day
+                X['minute'] = new_data.index.minute
+                X['hour'] = new_data.index.hour
+
+                # 選擇最終的特徵列
+                filter_name = pd.read_excel("highly_correlated_features.xlsx")
+                filter_name = filter_name["Highly Correlated Features"].to_list()
+                X = X[filter_name]
+
+                X_filter = pd.DataFrame(X, columns=filter_name)
+
+                # 預處理輸入數據
+                new_input_scaled = self.scaler_X.transform(X_filter.tail(update_row_num))
+
+                # LSTM 預測
+                new_input_tensor = torch.tensor(new_input_scaled, dtype=torch.float32).to(device)
+                new_input_tensor = new_input_tensor.unsqueeze(1)
+
+                # LightGBM 模型預測
+                prediction_lgbm_scaled = self.lgbm_model.predict(new_input_scaled).reshape(-1, 1)
+                prediction_lgbm = self.scaler_y.inverse_transform(prediction_lgbm_scaled)
+
+                with torch.no_grad():
+                    prediction_lstm_scaled = self.lstm_model(new_input_tensor).cpu().numpy()
+
+                # 解縮放 LSTM 預測結果
+                prediction_lstm = self.scaler_y.inverse_transform(prediction_lstm_scaled)
+
+                # 集成模型預測
+                ensemble_input = np.hstack((prediction_lstm, prediction_lgbm))
+                prediction_ensemble = self.ensemble_model.predict(ensemble_input)
+
+                # 動態報告預測結果
+                self.report_prediction(prediction_ensemble[-1].flatten())
+                
+                # Plot actual vs predicted values
+                plt.figure(figsize=(14, 8))
+                plt.plot(X.tail(update_row_num).index ,prediction_lstm, label='Predict (LSTM)', color='blue')
+                plt.plot(X.tail(update_row_num).index ,prediction_ensemble, label='Predict (Ensemble)', color='black')
+                # plt.plot(X.tail(i+1).index, data_done2['close'].tail(i+1), label='Acutal', color='orange')
+                plt.xlabel('Index')
+                plt.ylabel('Return Rate')
+                plt.title('Actual vs Predicted Values - LSTM, LightGBM, TabNet, and Ensemble Models')
+                plt.legend()
+                plt.show()                
+
+            except NotFittedError:
+                print("Loaded model is not fitted yet.")
+        else:
+            print("Model is not loaded. Cannot make predictions.")
+
+    def report_prediction(self, prediction):
+        """
+        動態報出每次預測的結果
+        """
+        # 直接打印預測結果到控制台
+        print(f"動態預測值報告: {prediction}")
+
+
+               
+    def OnNotifyHistoryTicksLONG(self, sMarketNo, nIndex, nPtr,  
+                                 nDate, nTimehms,nTimemillismicros,
+                                 nBid, nAsk, nClose, nQty, nSimulate):
+        
+        self.test.append(nClose)
+        
+    def OnNotifyBest5LONG(self, sMarketNo, nStockidx, nBestBid1, nBestBidQty1, nBestBid2,  nBestBidQty2, nBestBid3, nBestBidQty3, nBestBid4, nBestBidQty4, nBestBid5, nBestBidQty5, nExtendBid, nExtendBidQty, nBestAsk1, nBestAskQty1, nBestAsk2, nBestAskQty2, nBestAsk3, nBestAskQty3, nBestAsk4, nBestAskQty4, nBestAsk5, nBestAskQty5, nExtendAsk, nExtendAskQty, nSimulate):
+        if (nSimulate == 0):
+            labelnSimulate = "一般揭示"
+        elif (nSimulate == 1):
+            labelnSimulate = "試算揭示"
+
+
 # SKReplyLib event handler
 class skR_events:
     def OnReplyMessage(self, bstrUserID, bstrMessage):
@@ -85,12 +442,15 @@ class skR_events:
 # # 建立 event 跟 event handler 的連結
 
 # Event sink, 事件實體化
-EventQ = skQ_event()
+# EventQ = skQ_event()
+# 創建 skQ_event 的實例，並傳遞外部歷史數據
+EventQ = skQ_event(data_test)
 EventR = skR_events()
 # %%
 # 建立 event 跟 event handler 的連結
 ConnOSQ = cc.GetEvents(skQ, EventQ)
 ConnR = cc.GetEvents(skR, EventR)
+
 # %%
 # login
 print('Login', skC.SKCenterLib_GetReturnCodeMessage(skC.SKCenterLib_Login(ID,PW)))
@@ -99,6 +459,10 @@ print('Login', skC.SKCenterLib_GetReturnCodeMessage(skC.SKCenterLib_Login(ID,PW)
 # %%
 nCode = skQ.SKQuoteLib_EnterMonitorLONG()
 print("SKOSQuoteLib_EnterMonitor", skC.SKCenterLib_GetReturnCodeMessage(nCode))
+#%%
+nCode = skQ.SKQuoteLib_RequestLiveTick(-1,'TX00')
+
+print("SKQuoteLib_RequestTicks", skC.SKCenterLib_GetReturnCodeMessage(nCode[1]))
 # %%
 nCode = skQ.SKQuoteLib_RequestStockList(2)
 print("SKOSQuoteLib_RequestStockList", skC.SKCenterLib_GetReturnCodeMessage(nCode))
@@ -229,14 +593,13 @@ class Scraping_HistKline():
 
 test = Scraping_HistKline()
 #%%
-time_list = {'time1':["20240315", "20241124"],
-             'time2':["20231115", "20240314"]}
+time_list = {'time1':["20241101", "20241203"]}
 min_str = [1,5,60]
 
 for time in time_list:
     start_date, end_date = time_list[time]
     for freq in min_str:
-        test.RequestKLineAMByDate("MTX00",freq, start_date, end_date)
+        test.RequestKLineAMByDate("TX00",freq, start_date, end_date)
         df = test.process_kline_data(EventQ.data, r"C:\Users\user\OneDrive - Lehigh University\Desktop\investment\python\API")
 
 
