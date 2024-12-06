@@ -31,6 +31,7 @@ async def pump_task():
         pythoncom.PumpWaitingMessages()
         # 想要反應更快 可以將 0.1 取更小值
         await asyncio.sleep(0.1)
+
 # %%
 # get an event loop
 loop = asyncio.get_event_loop()
@@ -142,6 +143,9 @@ import joblib
 from sklearn.exceptions import NotFittedError
 import dill
 import requests
+from back_testing.Backtest import Backtest
+
+#%%
 class skQ_event:
     def __init__(self,data_test):
         self.temp = []
@@ -318,6 +322,7 @@ class skQ_event:
                 print("目前沒有新生成的五分鐘K線資料。等待更多的tick數據以完成新K線生成。")
         else:
             print("重取樣的結果為空，等待更多的 tick 資料...")
+
             
 
 
@@ -340,7 +345,6 @@ class skQ_event:
                 indicator = TAIndicatorSettings()
                 indicator2 = StockDataScraper()
 
-                self.temp = new_data
                 # 添加所有 alpha 特徵
                 data_alpha = alpha.add_all_alphas()
 
@@ -349,14 +353,18 @@ class skQ_event:
                 data_done1 = indicator2.add_indicator_with_timeperiods(data_alpha, timeperiod_only_indicators,
                                                                        timeperiods=[5, 10, 20, 50, 100, 200])
                 indicator_list = list(filtered_settings.keys())
-                data_done2 = indicator2.add_specified_indicators(data_alpha, indicator_list, filtered_settings)
+                data_done2 = indicator2.add_specified_indicators(data_done1, indicator_list, filtered_settings)
                 data_done2 = add_all_ta_features(data_done2, open='open', high='high', low='low', close='close', volume='volume')
 
+                self.code = data_done2
                 # 處理特徵和標籤
+                y = data_done2['close']
                 X = data_done2.drop(columns=['close'])
+                self.temp = X
+                
                 X = X.replace([np.inf, -np.inf], np.nan).dropna(axis=1, how='any')
                 
-                print(X)
+
                 # 添加日期特徵
                 X['day'] = new_data.index.day
                 X['minute'] = new_data.index.minute
@@ -402,12 +410,31 @@ class skQ_event:
                 plt.ylabel('Return Rate')
                 plt.title('Actual vs Predicted Values - LSTM, LightGBM, TabNet, and Ensemble Models')
                 plt.legend()
-                plt.show()                
+                plt.show()
+                
+                # 計算預測回報率
+                predicted_returns = pd.Series(prediction_ensemble)
 
+                # 使用保證金、停損、移動停利以及多/空倉進行回測
+                backtest = Backtest(initial_balance=200000, transaction_fee=30, margin_rate=0.1, stop_loss=0.0001, trailing_stop_pct=0.001, point_value=50)
+                return_rate, trade_log, portfolio_values, profit_loss_log = backtest.run_backtest(predicted_returns, 
+                                                                                                y.tail(update_row_num),
+                                                                                                 buy_threshold=0.001,
+                                                                                                short_threshold=-0.001,
+                                                                                                no_trade_before_9am=True)
+                
+                # 繪製未來預測與買入/賣出標記以及損益圖
+                backtest.plot_profit_loss(time=X.tail(update_row_num).index,
+                                        return_rate=predicted_returns.values,
+                                        actual=y.tail(update_row_num))
+
+                # 輸出摘要表
+                backtest.summary_table()
             except NotFittedError:
                 print("Loaded model is not fitted yet.")
         else:
             print("Model is not loaded. Cannot make predictions.")
+            
 
     def report_prediction(self, prediction):
         """

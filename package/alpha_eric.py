@@ -2787,6 +2787,361 @@ class AlphaFactory:
         return self.data
 
 
+    def alpha131(self, days=list):
+        """
+        利用开盘价和收盘价之间的相对变化幅度来捕捉趋势或盘整市场。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        """
+        new_columns = {}
+
+        for day in days:
+            # 计算开盘价和收盘价的相对变化
+            open_close_diff = (self.data['close'] - self.data['open']).rolling(window=day).mean()
+
+            # 取绝对值来衡量波动的幅度
+            alpha = open_close_diff.abs()
+
+            new_columns[f'alpha131_{day}'] = alpha
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+    def alpha132(self, days=list):
+        """
+        通过成交量变化与价格变化率之间的相关性来捕捉趋势或盘整市场。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        """
+        new_columns = {}
+
+        for day in days:
+            # 计算收盘价变化率
+            price_change_rate = self.data['close'].pct_change()
+
+            # 计算成交量的变化率
+            volume_change_rate = self.data['volume'].pct_change()
+
+            # 计算价格变化与成交量变化的滚动相关性
+            correlation = price_change_rate.rolling(window=day).corr(volume_change_rate)
+
+            new_columns[f'alpha132_{day}'] = correlation
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+    def alpha133(self, days=list):
+        """
+        使用最高价和最低价之间的波动范围来捕捉市场的趋势或盘整特征。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        """
+        new_columns = {}
+
+        for day in days:
+            # 计算最高价和最低价之间的差距
+            high_low_diff = (self.data['high'] - self.data['low']).rolling(window=day).mean()
+
+            new_columns[f'alpha133_{day}'] = high_low_diff
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+    def alpha134(self, days=list):
+        """
+        使用收盘价与前一天收盘价的波动率来判断市场是否处于趋势或盘整状态。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        """
+        new_columns = {}
+
+        for day in days:
+            # 计算收盘价的变化率（相对前一天）
+            close_to_close_change = self.data['close'].pct_change().rolling(window=day).std()
+
+            new_columns[f'alpha134_{day}'] = close_to_close_change
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+    def alpha135(self, days=list):
+        """
+        通过计算收盘价与均线的偏离程度来判断市场的趋势性或盘整特征。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        """
+        new_columns = {}
+
+        for day in days:
+            # 计算均线
+            moving_average = self.data['close'].rolling(window=day).mean()
+
+            # 计算收盘价与均线的偏离程度
+            deviation = (self.data['close'] - moving_average) / (moving_average + 1e-6)
+
+            new_columns[f'alpha135_{day}'] = deviation
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+    def alpha136(self, days=list):
+        """
+        成交量加权的波动率调整收益率。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        """
+        new_columns = {}
+        
+        for day in days:
+            # 计算收盘价的收益率
+            returns = self.data['close'].pct_change()
+
+            # 计算波动率（标准差）
+            volatility = self.data['close'].pct_change().rolling(window=day).std()
+
+            # 计算成交量的移动平均
+            volume_ma = self.data['volume'].rolling(window=day).mean()
+
+            # 结合收益率、波动率、和成交量的加权
+            alpha = (returns / (volatility + 1e-6)) * volume_ma
+
+            new_columns[f'alpha136_{day}'] = alpha
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+    def alpha137(self, days=list):
+        """
+        利用非对称波动率来捕捉市场的趋势和风险。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        """
+        new_columns = {}
+
+        for day in days:
+            # 计算收益率
+            returns = self.data['close'].pct_change()
+
+            # 分别计算上涨和下跌的波动率
+            up_volatility = returns[returns > 0].rolling(window=day).std()
+            down_volatility = returns[returns < 0].rolling(window=day).std()
+
+            # 计算成交量的滚动平均
+            volume_ma = self.data['volume'].rolling(window=day).mean()
+
+            # 非对称波动率因子，上涨波动率和下跌波动率相加后加权
+            asym_vol = (up_volatility.fillna(0) - down_volatility.fillna(0)) * volume_ma
+
+            new_columns[f'alpha137_{day}'] = asym_vol
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+    def alpha138(self, short_window=10, mid_window=30, long_window=60, days=list):
+        """
+        使用多个移动均线的偏离度来评估市场趋势。
+        
+        参数:
+        - short_window (int): 短期移动均线窗口大小。
+        - mid_window (int): 中期移动均线窗口大小。
+        - long_window (int): 长期移动均线窗口大小。
+        - days (list): 用于计算的时间间隔。
+        """
+        new_columns = {}
+
+        for day in days:
+            # 计算短期、中期和长期的移动均线
+            short_ma = self.data['close'].rolling(window=short_window).mean()
+            mid_ma = self.data['close'].rolling(window=mid_window).mean()
+            long_ma = self.data['close'].rolling(window=long_window).mean()
+
+            # 计算短期与中期，以及中期与长期均线之间的偏离程度
+            short_mid_diff = (short_ma - mid_ma) / (mid_ma + 1e-6)
+            mid_long_diff = (mid_ma - long_ma) / (long_ma + 1e-6)
+
+            # 结合短期、中期、长期的偏离度
+            alpha = (short_mid_diff + mid_long_diff) * day
+
+            new_columns[f'alpha138_{day}'] = alpha
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+    def alpha139(self, days=list):
+        """
+        使用高低价差与波动率结合来捕捉市场的波动特征。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        """
+        new_columns = {}
+
+        for day in days:
+            # 计算高低价差
+            high_low_spread = self.data['high'] - self.data['low']
+
+            # 计算波动率
+            volatility = self.data['close'].pct_change().rolling(window=day).std()
+
+            # 高低价差乘以波动率，捕捉市场在波动性增加时的变化特征
+            alpha = high_low_spread * (1 + volatility)
+
+            new_columns[f'alpha139_{day}'] = alpha
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+    def alpha140(self, days=list):
+        """
+        使用价格的累积差异与成交量的交互效应来评估市场的趋势变化。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        """
+        new_columns = {}
+
+        for day in days:
+            # 计算开盘价和收盘价的累积差异
+            cumulative_diff = (self.data['close'] - self.data['open']).rolling(window=day).sum()
+
+            # 计算成交量的移动平均
+            volume_ma = self.data['volume'].rolling(window=day).mean()
+
+            # 价格差异与成交量的交互效应
+            alpha = cumulative_diff * volume_ma
+
+            new_columns[f'alpha140_{day}'] = alpha
+
+        self.data = pd.concat([self.data, pd.DataFrame(new_columns, index=self.data.index)], axis=1)
+        return self.data
+
+    def alpha141(self, days=list, return_weight=0.5):
+        """
+        Alpha141：结合波动率和动量的因子，使用滚动Z分数和收益率捕捉动量特征。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        - return_weight (float): 用于近期收益与波动率的权重比例。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            close = self.data['close']
+            returns = close.pct_change()
+            rolling_mean = close.rolling(window=day).mean()
+            rolling_std = close.rolling(window=day).std()
+            
+            z_score = (close - rolling_mean) / rolling_std
+            momentum = returns.rolling(window=day).apply(lambda x: sum(x), raw=True)
+
+            alpha = (z_score * return_weight + momentum * (1 - return_weight))
+            self.data[f'alpha141_{day}'] = alpha
+        
+        return self.data
+
+    def alpha142(self, days=list, vol_weight=0.7):
+        """
+        Alpha142：基于波动性和均值回复特征的因子，使用成交量加权的标准差捕捉市场极端价格行为。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        - vol_weight (float): 波动性与成交量之间的加权比例。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            high = self.data['high']
+            low = self.data['low']
+            close = self.data['close']
+            volume = self.data['volume']
+
+            rolling_volatility = close.rolling(window=day).std()
+            volume_scaled = volume.rolling(window=day).mean()
+
+            alpha = (high - low) / rolling_volatility * vol_weight + volume_scaled * (1 - vol_weight)
+            self.data[f'alpha142_{day}'] = alpha
+        
+        return self.data
+
+    def alpha143(self, days=list, skew_weight=0.6):
+        """
+        Alpha143：通过偏态（Skewness）与滚动中位数的组合来捕捉价格分布的不对称性。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        - skew_weight (float): 偏度在最终 alpha 值中的权重比例。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            close = self.data['close']
+
+            median_price = close.rolling(window=day).median()
+            skewness = close.rolling(window=day).skew()
+
+            alpha = (close - median_price) * skew_weight + skewness * (1 - skew_weight)
+            self.data[f'alpha143_{day}'] = alpha
+        
+        return self.data
+
+    def alpha144(self, days=list, kurt_weight=0.8):
+        """
+        Alpha144：使用峰度（Kurtosis）来检测市场行为的突然变化，高峰度表示价格的剧烈变化。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        - kurt_weight (float): 峰度在检测价格高峰条件下的权重。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            close = self.data['close']
+            volume = self.data['volume']
+
+            rolling_kurt = close.rolling(window=day).kurt()
+            volume_mean = volume.rolling(window=day).mean()
+
+            alpha = (rolling_kurt * kurt_weight) + volume_mean * (1 - kurt_weight)
+            self.data[f'alpha144_{day}'] = alpha
+        
+        return self.data
+
+    def alpha145(self, days=list, vix_relation_factor=0.3):
+        """
+        Alpha145：使用高低价格差和成交量的波动性关系，模拟与VIX类似的市场恐慌情绪。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        - vix_relation_factor (float): 波动率与成交量信号之间的平衡因子。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            high = self.data['high']
+            low = self.data['low']
+            volume = self.data['volume']
+
+            range_volatility = (high - low) / (high + low + 0.001)
+            rolling_vol = range_volatility.rolling(window=day).mean()
+            volume_std = volume.rolling(window=day).std()
+
+            alpha = rolling_vol * vix_relation_factor + volume_std * (1 - vix_relation_factor)
+            self.data[f'alpha145_{day}'] = alpha
+
+        return self.data
+    
     def add_all_alphas(self, days=[5, 10, 20, 60, 120, 240], custom_params=None):
         """
         Method to add all alpha features to the data at once.
