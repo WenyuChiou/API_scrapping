@@ -3141,7 +3141,257 @@ class AlphaFactory:
             self.data[f'alpha145_{day}'] = alpha
 
         return self.data
-    
+ 
+    def alpha146(self, days=list):
+        """
+        Alpha146：基于高低价与收盘价的差值，衡量短期波动性。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            price_range = self.data['high'] - self.data['low']
+            close_diff = self.data['close'] - self.data['low']
+            alpha = close_diff / (price_range + 1e-6)
+            self.data[f'alpha146_{day}'] = alpha
+        return self.data
+
+    def alpha147(self, days=list):
+        """
+        Alpha147：利用开盘与收盘价的差异结合成交量，评估市场强度。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            open_close_diff = self.data['close'] - self.data['open']
+            volume_mean = self.data['volume'].rolling(window=day).mean()
+            alpha = open_close_diff * volume_mean
+            self.data[f'alpha147_{day}'] = alpha
+        return self.data
+
+    def alpha148(self, days=list):
+        """
+        Alpha148：通过收盘价与均值价格的偏离度衡量市场的相对强弱。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            mean_price = (self.data['high'] + self.data['low']) / 2
+            alpha = (self.data['close'] - mean_price) / mean_price
+            self.data[f'alpha148_{day}'] = alpha
+        return self.data
+
+    def alpha149(self, days=list):
+        """
+        Alpha149：结合最高价、最低价与收盘价的加权移动平均，捕捉价格趋势。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            weighted_avg = (self.data['high'] + self.data['low'] + 2 * self.data['close']) / 4
+            alpha = weighted_avg.rolling(window=day).mean()
+            self.data[f'alpha149_{day}'] = alpha
+        return self.data
+
+    def alpha150(self, days=list):
+        """
+        Alpha150：利用成交量与价格波动的比率来衡量市场活跃度。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            price_volatility = self.data['high'] - self.data['low']
+            volume_mean = self.data['volume'].rolling(window=day).mean()
+            alpha = volume_mean / (price_volatility + 1e-6)
+            self.data[f'alpha150_{day}'] = alpha
+        return self.data
+
+    def alpha151(self, days=list):
+        """
+        Alpha151：基于收盘价与开盘价之间的变化幅度，结合成交量变化。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            price_change = self.data['close'] - self.data['open']
+            volume_std = self.data['volume'].rolling(window=day).std()
+            alpha = price_change * volume_std
+            self.data[f'alpha151_{day}'] = alpha
+        return self.data
+
+    def alpha152(self, days=list):
+        """
+        Alpha152：通过收盘价与开盘价的均值与价格波动幅度，评估市场的平稳程度。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            mean_price = (self.data['close'] + self.data['open']) / 2
+            price_range = self.data['high'] - self.data['low']
+            alpha = mean_price / (price_range + 1e-6)
+            self.data[f'alpha152_{day}'] = alpha
+        return self.data
+
+    def alpha153(self, days=list):
+        """
+        Alpha153：计算短期内价格的变化速率，评估市场的动量特征。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            price_diff = self.data['close'].diff(day)
+            alpha = price_diff / day
+            self.data[f'alpha153_{day}'] = alpha
+        return self.data
+
+    def alpha154(self, days=list):
+        """
+        Alpha154：利用收盘价相对于高低价的相对位置，衡量价格的强弱。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            price_range = self.data['high'] - self.data['low']
+            alpha = (self.data['close'] - self.data['low']) / (price_range + 1e-6)
+            self.data[f'alpha154_{day}'] = alpha
+        return self.data
+
+    def alpha155(self, days=list):
+        """
+        Alpha155：基于成交量与价格波动的标准差，捕捉市场中的波动性特征。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            price_std = self.data['close'].rolling(window=day).std()
+            volume_mean = self.data['volume'].rolling(window=day).mean()
+            alpha = price_std * volume_mean
+            self.data[f'alpha155_{day}'] = alpha
+        return self.data
+
+    def alpha156(self, days=list):
+        """
+        Alpha156：通过短周期内的收盘价变化幅度与成交量的相关性，衡量市场的波动性与交易活跃度。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            price_change = self.data['close'].diff()
+            volume = self.data['volume']
+            correlation = price_change.rolling(window=day).corr(volume)
+            self.data[f'alpha156_{day}'] = correlation
+        return self.data
+
+    def alpha157(self, days=list):
+        """
+        Alpha157：利用开盘价和收盘价之间的差异与成交量标准差的组合来衡量市场动量。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            open_close_diff = self.data['close'] - self.data['open']
+            volume_std = self.data['volume'].rolling(window=day).std()
+            alpha = open_close_diff * volume_std
+            self.data[f'alpha157_{day}'] = alpha
+        return self.data
+
+    def alpha158(self, days=list):
+        """
+        Alpha158：结合最高价、最低价与收盘价的标准差，捕捉市场的波动性。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            price_std = self.data[['high', 'low', 'close']].std(axis=1)
+            rolling_std = price_std.rolling(window=day).mean()
+            self.data[f'alpha158_{day}'] = rolling_std
+        return self.data
+
+    def alpha159(self, days=list):
+        """
+        Alpha159：使用成交量的变异系数（标准差/均值）来衡量市场交易的波动性。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            volume_mean = self.data['volume'].rolling(window=day).mean()
+            volume_std = self.data['volume'].rolling(window=day).std()
+            alpha = volume_std / (volume_mean + 1e-6)
+            self.data[f'alpha159_{day}'] = alpha
+        return self.data
+
+    def alpha160(self, days=list):
+        """
+        Alpha160：结合收盘价的移动平均与成交量变化，捕捉市场趋势的强弱。
+        
+        参数:
+        - days (list): 用于计算的时间间隔。
+        
+        返回:
+        - df (pd.DataFrame): 返回包含新特征的数据。
+        """
+        for day in days:
+            close_ma = self.data['close'].rolling(window=day).mean()
+            volume_change = self.data['volume'].pct_change()
+            alpha = close_ma * volume_change
+            self.data[f'alpha160_{day}'] = alpha
+        return self.data
+       
     def add_all_alphas(self, days=[5, 10, 20, 60, 120, 240], custom_params=None):
         """
         Method to add all alpha features to the data at once.
