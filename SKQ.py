@@ -37,6 +37,7 @@ async def pump_task():
 loop = asyncio.get_event_loop()
 pumping_loop = loop.create_task(pump_task())
 print(datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S,"), "Event pumping is ready!")
+
 # %%
 # %%
 # 建立物件，避免重複 createObject
@@ -133,6 +134,7 @@ filter_name = pd.read_excel("highly_correlated_features.xlsx")
 filter_name = filter_name["Highly Correlated Features"].to_list()
 
 data_test=data['2024-11-20':'2024-12-02']
+
 # %%
 #Quote event class
 #Quote event class
@@ -143,7 +145,7 @@ import joblib
 from sklearn.exceptions import NotFittedError
 import dill
 import requests
-from back_testing.Backtest import Backtest
+from back_testing.Backtest import Forwardtest
 
 #%%
 class skQ_event:
@@ -339,6 +341,10 @@ class skQ_event:
                 
                 # 資料更新數量
                 update_row_num = new_data.shape[0] - self.len
+                
+                if update_row_num ==1:
+                    self.backtest = Forwardtest(initial_balance=200000, transaction_fee=30, margin_rate=0.1, 
+                                           stop_loss=0.001, trailing_stop_pct=0.001, point_value=50)
 
                 # 前處理步驟
                 alpha = AlphaFactory(new_data)
@@ -416,20 +422,27 @@ class skQ_event:
                 predicted_returns = pd.Series(prediction_ensemble)
 
                 # 使用保證金、停損、移動停利以及多/空倉進行回測
-                backtest = Backtest(initial_balance=200000, transaction_fee=30, margin_rate=0.1, stop_loss=0.0001, trailing_stop_pct=0.001, point_value=50)
-                return_rate, trade_log, portfolio_values, profit_loss_log = backtest.run_backtest(predicted_returns, 
-                                                                                                y.tail(update_row_num),
+                return_rate, trade_log, portfolio_values, profit_loss_log = self.backtest.run_backtest(predicted_returns.iloc[update_row_num-1], 
+                                                                                                y.iloc[self.len+update_row_num-1],
+                                                                                                current_time=y.index[self.len+update_row_num-1],
                                                                                                  buy_threshold=0.001,
                                                                                                 short_threshold=-0.001,
-                                                                                                no_trade_before_9am=True)
+                                                                                                no_trade_before_9am=False,
+                                                                                                no_trade_after_13am=False)
                 
-                # 繪製未來預測與買入/賣出標記以及損益圖
-                backtest.plot_profit_loss(time=X.tail(update_row_num).index,
-                                        return_rate=predicted_returns.values,
-                                        actual=y.tail(update_row_num))
+                for trade in profit_loss_log:
+                    print(trade)
+                print(self.backtest.balance)
+                            # 繪製未來預測與買入/賣出標記以及損益圖
+                self.time = y.index[self.len:self.len+update_row_num-1]
+                self.backtest.plot_profit_loss(time=y.index[self.len:self.len+update_row_num],
+                                        return_rate=predicted_returns.iloc[:update_row_num],
+                                        actual=data_done2[['open','high','low','close','volume']].iloc[self.len:self.len+update_row_num],
+                                        default_start_time='02:00:00',
+                                        default_end_time='05:30:00')
 
                 # 輸出摘要表
-                backtest.summary_table()
+                self.backtest.summary_table()
             except NotFittedError:
                 print("Loaded model is not fitted yet.")
         else:
@@ -620,7 +633,7 @@ class Scraping_HistKline():
 
 test = Scraping_HistKline()
 #%%
-time_list = {'time1':["20241101", "20241203"]}
+time_list = {'time1':["20241101", "20241204"]}
 min_str = [1,5,60]
 
 for time in time_list:

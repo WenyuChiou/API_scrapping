@@ -3293,7 +3293,7 @@ class AlphaFactory:
 
     def alpha155(self, days=list):
         """
-        Alpha155：基于成交量与价格波动的标准差，捕捉市场中的波动性特征。
+        Alpha155：通过成交量的移动平均与价格变化的关系来评估市场的动量。
         
         参数:
         - days (list): 用于计算的时间间隔。
@@ -3301,11 +3301,14 @@ class AlphaFactory:
         返回:
         - df (pd.DataFrame): 返回包含新特征的数据。
         """
+        new_features = {}
         for day in days:
-            price_std = self.data['close'].rolling(window=day).std()
             volume_mean = self.data['volume'].rolling(window=day).mean()
-            alpha = price_std * volume_mean
-            self.data[f'alpha155_{day}'] = alpha
+            price_change = self.data['close'].pct_change()
+            alpha = volume_mean * price_change
+            new_features[f'alpha155_{day}'] = alpha
+        
+        self.data = pd.concat([self.data, pd.DataFrame(new_features, index=self.data.index)], axis=1)
         return self.data
 
     def alpha156(self, days=list):
@@ -3318,12 +3321,16 @@ class AlphaFactory:
         返回:
         - df (pd.DataFrame): 返回包含新特征的数据。
         """
+        new_features = {}
         for day in days:
             price_change = self.data['close'].diff()
             volume = self.data['volume']
             correlation = price_change.rolling(window=day).corr(volume)
-            self.data[f'alpha156_{day}'] = correlation
+            new_features[f'alpha156_{day}'] = correlation
+        
+        self.data = pd.concat([self.data, pd.DataFrame(new_features, index=self.data.index)], axis=1)
         return self.data
+
 
     def alpha157(self, days=list):
         """
@@ -3385,13 +3392,16 @@ class AlphaFactory:
         返回:
         - df (pd.DataFrame): 返回包含新特征的数据。
         """
+        new_features = {}
         for day in days:
             close_ma = self.data['close'].rolling(window=day).mean()
             volume_change = self.data['volume'].pct_change()
             alpha = close_ma * volume_change
-            self.data[f'alpha160_{day}'] = alpha
+            new_features[f'alpha160_{day}'] = alpha
+        
+        self.data = pd.concat([self.data, pd.DataFrame(new_features, index=self.data.index)], axis=1)
         return self.data
-       
+    
     def add_all_alphas(self, days=[5, 10, 20, 60, 120, 240], custom_params=None):
         """
         Method to add all alpha features to the data at once.

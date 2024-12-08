@@ -349,7 +349,7 @@ class Forwardtest:
             self.portfolio_values.append(self.balance)
             self.profit_loss_log.append({'time': time, 'profit_loss': profit_loss})
 
-    def run_backtest(self, predicted_return, actual_price, current_time, buy_threshold=0.0008, short_threshold=-0.005, no_trade_before_9am=True):
+    def run_backtest(self, predicted_return, actual_price, current_time, buy_threshold=0.0008, short_threshold=-0.005, no_trade_before_9am=True, no_trade_after_13am=True):
         """
         根據單筆預測回報率進行回測。
 
@@ -398,7 +398,7 @@ class Forwardtest:
                 self.execute_trade('short', actual_price, current_time)
 
         # 如果交易時間超過下午12點，強制平倉
-        if current_time.time() > time(12, 0):
+        if no_trade_after_13am and current_time.time() > time(12, 0):
             print('交易時間截止')
             # 如果在結束時還有持倉，則平倉
             if self.position > 0:
