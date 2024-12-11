@@ -14,9 +14,9 @@ import comtypes.gen.SKCOMLib as sk
 # %%
 # login ID and PW
 # 身份證
-ID = 'F130659713'
+ID = ''
 # 密碼
-PW = 'eric1234'
+PW = ''
 print(datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S,"), 'Set ID and PW')
 
 
