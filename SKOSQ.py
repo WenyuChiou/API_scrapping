@@ -241,13 +241,13 @@ class Scraping_HistKline():
 
 test = Scraping_HistKline()
 #%%
-time_list = {'time1':["20241118", "20241128"]}
+time_list = {'time1':["20241101", "20241203"]}
 min_str = [1,5,60]
 
 for time in time_list:
     start_date, end_date = time_list[time]
     for freq in min_str:
-        test.RequestKLineAMByDate("CME,RTY0000",freq, start_date, end_date)
+        test.RequestKLineAMByDate("CME,MNQ0000",freq, start_date, end_date)
         df = test.process_kline_data(EventOSQ.data, r"C:\Users\user\OneDrive - Lehigh University\Desktop\investment\python\API")
 
 

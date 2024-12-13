@@ -1491,7 +1491,78 @@ class ForwardTest:
         })
         print(summary_df)
 
+class RealtimeSpeedForceIndicators:
+    def __init__(self, speed_window=5, force_window=5, range_window=5):
+        """
+        Initialize the strategy with specific rolling window sizes.
+        :param speed_window: Window size for speed calculation.
+        :param force_window: Window size for force calculation.
+        :param range_window: Window size for smoothed range_diff calculation.
+        """
+        self.speed_window = speed_window
+        self.force_window = force_window
+        self.range_window = range_window
+        self.data = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume', 'speed', 'force', 'smoothed_range_diff'])
 
+    def add_new_data(self, new_data):
+        """
+        Add new data to the strategy and calculate indicators.
+        :param new_data: A DataFrame containing the latest data row(s).
+        """
+        required_columns = ['open', 'high', 'low', 'close', 'volume']
+
+        # Ensure new_data contains the required columns
+        if not all(col in new_data.columns for col in required_columns):
+            raise ValueError(f"Input data must contain columns: {required_columns}")
+
+        # Select only required columns from new_data
+        filtered_data = new_data[required_columns].copy()
+
+        # Append the new filtered data
+        self.data = pd.concat([self.data, filtered_data], ignore_index=True)
+
+        # Calculate speed (close price difference)
+        self.data['speed'] = self.data['close'].diff()
+
+        # Calculate force (second derivative of volume)
+        self.data['volume_diff'] = self.data['volume'].diff()
+        self.data['force'] = self.data['volume_diff'].diff()
+
+        # Calculate range_diff (high-low difference)
+        self.data['range_diff'] = self.data['high'] - self.data['low']
+
+        # Smooth range_diff using a rolling window
+        self.data['smoothed_range_diff'] = (
+            self.data['range_diff']
+            .rolling(window=self.range_window, min_periods=1)
+            .mean()
+        )
+
+        # Replace all NaN values with 0
+        self.data.fillna(0, inplace=True)
+
+    def get_latest_indicators(self):
+        """
+        Get the latest calculated indicators.
+        :return: A dictionary containing the latest speed, force, and smoothed range_diff.
+        
+        speed > 0 and force > 0   and smoothed_range_diff < volatility_limit => Long
+        
+        Buy if the current price is closer to the retracement levels (e.g., 38.2% Fibonacci retracement).
+        
+        speed < 0 and force < 0   and smoothed_range_diff < volatility_limit => Short
+        
+        Short if the current price is closer to the retracement levels (e.g., 61.8% Fibonacci retracement)
+        
+        """
+        if not self.data.empty:
+            latest_row = self.data.iloc[-1]
+            return {
+                'speed': latest_row.get('speed', 0),
+                'force': latest_row.get('force', 0),
+                'smoothed_range_diff': latest_row.get('smoothed_range_diff', 0),
+            }
+        return {'speed': 0, 'force': 0, 'smoothed_range_diff': 0}
 
 
 
@@ -1505,10 +1576,16 @@ class ForwardTest:
 #%%
 predicted_returns = pd.Series(y_pred_lstm_rescaled.flatten())
 forward_test = ForwardTest(initial_balance=200000, transaction_fee=30, margin_rate=0.1, stop_loss=0.001, trailing_stop_pct=0.003, point_value=50, data_folder = "trading_data", symbol='TX00')
-
+status_indicator  = RealtimeSpeedForceStrategy(speed_window=3, force_window=3, range_window=3)
+                    
 for cc in range(50):
     predicted_return = predicted_returns.iloc[cc]
     actual_price = data_training[['open', 'high', 'low', 'close', 'volume']][test_date[0]:test_date[1]].iloc[cc]
+    actual_price_series = data_training[['open', 'high', 'low', 'close', 'volume']][test_date[0]:test_date[1]].iloc[0:cc+1]
+    status_indicator.add_new_data(actual_price_series)
+    
+    status_indicator_done = status_indicator.data
+    
     current_time = data_training['close'][test_date[0]:test_date[1]].index[cc]
 
     state = forward_test.run_backtest(

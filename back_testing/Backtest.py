@@ -270,13 +270,17 @@ import pandas as pd
 import os
 import json
 import datetime
-
+import datetime as dt
+import pytz
 from datetime import time
 class ForwardTest:
     def __init__(self, initial_balance=100000, transaction_fee=1, margin_rate=0.1, stop_loss=0.001, 
                  trailing_stop_pct=0.000001, point_value=1, data_folder="trading_data", symbol="unknown",
-                 start_time = "09:00", end_time = "13:25"):
-        # 初始化參數
+                 morning_session=("08:45", "13:25"), night_session=("15:00", "05:00"),
+                 thresholds_by_segment=None):
+        """
+        初始化參數並根據當前時間動態設置交易時間。
+        """
         self.initial_balance = initial_balance
         self.transaction_fee = transaction_fee
         self.margin_rate = margin_rate
@@ -287,7 +291,8 @@ class ForwardTest:
         self.position = 0
         self.trade_log = []
         self.portfolio_values = [initial_balance]
-        self.entry_price ,self.entry_time = None, None
+        self.entry_price = None
+        self.entry_time = None
         self.profit_loss_log = []
         self.total_transaction_fees = 0
         self.point_value = point_value
@@ -295,12 +300,31 @@ class ForwardTest:
         self.strategy_status = []
         self.data_folder = data_folder
         self.symbol = symbol
-        self.trailing_stop_log, self.stop_loss_log = [], []
-        self.trade_time = {
-            "start_time": start_time,  # 默認開始時間
-            "end_time": end_time    # 默認結束時間
-        }
+        self.trailing_stop_log = []
+        self.stop_loss_log = []
+        self.trade_time = {"start_time": None, "end_time": None}
+        self.sTradeSession = None
+        self.thresholds_by_segment = thresholds_by_segment or {}
 
+        # 獲取當前時間並轉換為 UTC+8
+        current_time = dt.datetime.now(pytz.utc).astimezone(pytz.timezone("Asia/Shanghai"))
+
+        # 動態設置交易時間
+        morning_start, morning_end = [dt.datetime.strptime(t, "%H:%M").time() for t in morning_session]
+        night_start, night_end = [dt.datetime.strptime(t, "%H:%M").time() for t in night_session]
+
+        if morning_start <= current_time.time() <= morning_end:
+            self.trade_time["start_time"], self.trade_time["end_time"] = morning_session
+            self.sTradeSession = 0  # 早盤
+            print(f"當前交易時段: 早盤 | 開始: {morning_session[0]}, 結束: {morning_session[1]}")
+        elif current_time.time() >= night_start or current_time.time() <= night_end:
+            self.trade_time["start_time"], self.trade_time["end_time"] = night_session
+            self.sTradeSession = 1  # 夜盤
+            print(f"當前交易時段: 夜盤 | 開始: {night_session[0]}, 結束: {night_session[1]}")
+        else:
+            print("非交易時段，目前無有效交易時間。")
+            self.trade_time["start_time"], self.trade_time["end_time"] = None, None
+            self.sTradeSession = None
 
         # 嘗試從資料夾加載數據
         previous_data = self.load_trading_files()
@@ -495,7 +519,7 @@ class ForwardTest:
         self.save_trading_files()
         print("Trading terminated and data saved.")
 
-    def execute_trade(self, action, price, time, contracts=1):
+    def execute_trade(self, action, price, time, contracts=1, reason = None):
         profit_loss = 0
         if action == 'buy' and self.position == 0:
             # Buy contracts (long position)
@@ -516,12 +540,13 @@ class ForwardTest:
             self.total_transaction_fees += self.transaction_fee * self.position
             self.trade_log.append({'action': 'sell', 'price': price, 'contracts': self.position, 'time': time, 'profit_loss': profit_loss})
             # Record profit/loss to log
-            self.profit_loss_log.append({'time': time, 'profit_loss': profit_loss, 'strategy': self.strategy_status[-1]['Strategy state']})
+            self.profit_loss_log.append({'time': time, 'profit_loss': profit_loss, 'strategy': self.strategy_status[-1]['Strategy state'],
+                                        'reason': reason})
             self.position = 0
             self.entry_price = None
             self.entry_time = None
             self.trailing_stop = None
-            
+
         elif action == 'short' and self.position == 0:
             # Enter short contracts
             required_margin = contracts * price * self.margin_rate
@@ -541,60 +566,200 @@ class ForwardTest:
             self.total_transaction_fees += self.transaction_fee * abs(self.position)
             self.trade_log.append({'action': 'cover', 'price': price, 'contracts': abs(self.position), 'time': time, 'profit_loss': profit_loss})
             # Record profit/loss to log
-            self.profit_loss_log.append({'time': time, 'profit_loss': profit_loss, 'strategy': self.strategy_status[-1]['Strategy state']})
+            self.profit_loss_log.append({'time': time, 'profit_loss': profit_loss, 'strategy': self.strategy_status[-1]['Strategy state'],
+                                        'reason': reason})
             self.position = 0
             self.entry_price = None
             self.entry_time = None
             self.trailing_stop = None
+
+            
         if action in ['sell', 'cover']:
             self.portfolio_values.append(self.balance)
 
-    def detect_market_state(self, predicted_return, actual_price, threshold=0.02, osc_window=5):
-        if len(self.lookback_prices) < osc_window:
+    def detect_market_state(self, speed, force, force_std, osc_window):
+        """
+        根據當前交易時段檢測市場狀態。
+        """
+        if len(self.lookback_prices) <= osc_window:
+            print(f"不足窗口大小 ({osc_window}) 的數據，返回 'default'")
             return 'default'
 
-        recent_high = max(self.lookback_prices[-osc_window:-1], key=lambda x: x['high'])['high']
-        recent_low = min(self.lookback_prices[-osc_window:-1], key=lambda x: x['low'])['low']
+        now = dt.datetime.now(pytz.utc).astimezone(pytz.timezone("Asia/Shanghai")).time()
 
-        if recent_low <= actual_price <= recent_high:
+        if self.sTradeSession == 0:  # 早盤
+            thresholds = self.thresholds_by_segment.get('morning')
+            time_segment = 'morning'
+        elif self.sTradeSession == 1:  # 夜盤
+            thresholds = self.thresholds_by_segment.get('night')
+            time_segment = 'night'
+        else:
+            print(f"當前不在交易時段內，返回 'None'")
+            return 'None'
+
+        if not thresholds:
+            print(f"未找到 {time_segment} 時段的閾值資料，返回 'None'")
+            return 'None'
+
+        # 解構閾值
+        osc_force_std = thresholds['osc_force_std']
+        osc_force_range = thresholds['osc_force_range']
+        osc_speed_range = thresholds['osc_speed_range']
+        trend_force_threshold_up = thresholds['trend_force_threshold_up']
+        trend_speed_threshold_up = thresholds['trend_speed_threshold_up']
+        trend_force_threshold_down = thresholds['trend_force_threshold_down']
+        trend_speed_threshold_down = thresholds['trend_speed_threshold_down']
+
+        print(f"檢查條件: force_std={force_std}, force={force}, speed={speed}, 時段={time_segment}")
+
+        if (
+            force_std < osc_force_std and
+            (osc_force_range[0] <= force <= osc_force_range[1] or
+             osc_speed_range[0] <= speed <= osc_speed_range[1])
+        ):
+            print(f"市場處於盤整狀態 (oscillation) - 時段: {time_segment}")
             return 'oscillation'
-        elif actual_price > recent_high or actual_price < recent_low:
+
+        if (
+            (force > trend_force_threshold_up and speed > trend_speed_threshold_up) or
+            (force < trend_force_threshold_down and speed < trend_speed_threshold_down)
+        ):
+            print(f"市場處於趨勢狀態 (trend) - 時段: {time_segment}")
             return 'trend'
+
+        print(f"市場狀態無法確定，返回 'None' - 時段: {time_segment}")
         return 'None'
+
+            
 
     def apply_strategy(self, strategy_func, *args, **kwargs):
         strategy_func(*args, **kwargs)
 
-    def oscillation_strategy(self, predicted_return, actual_price, current_time, recent_high, recent_low):
-        # 计算区间上下边界
-        lower_bound = recent_low + (recent_high - recent_low) * 0.2
-        upper_bound = recent_high - (recent_high - recent_low) * 0.2
+    def trend_strategy(self, predicted_return, actual_price, current_time, buy_threshold, short_threshold, 
+                    recent_high, recent_low, speed=None, force=None, smoothed_range_diff=None,
+                    cooldown_loss_threshold=-500, cooldown_time=180, retrace_ratios=(0.382, 0.618),
+                    dynamic_adjustment=True):
+        """
+        優化版趨勢策略（無續倉邏輯）。
+        1. 動態調整條件。
+        2. 分段判斷趨勢。
+        """
+        # 冷卻期檢查
+        if self.trade_log:
+            last_trade = self.trade_log[-1]
+            if 'profit_loss' in last_trade and last_trade['profit_loss'] is not None:
+                last_loss = last_trade['profit_loss']
+                time_since_last_trade = (current_time - pd.to_datetime(last_trade['time'])).seconds
+                if last_loss < cooldown_loss_threshold and time_since_last_trade < cooldown_time:
+                    print(f"Cooling down due to recent loss {last_loss}, Time remaining: {cooldown_time - time_since_last_trade} seconds")
+                    return  # 跳過交易
 
-        # 买入策略
-        if predicted_return > 0 and actual_price < lower_bound:
+        # 動態計算回撤位
+        retrace_1 = recent_low + (recent_high - recent_low) * retrace_ratios[0]  # 第一回撤位
+        retrace_2 = recent_low + (recent_high - recent_low) * retrace_ratios[1]  # 第二回撤位
+
+        # 確保指標的完整性
+        if speed is None or force is None or smoothed_range_diff is None:
+            print("缺少必要的指標 (speed, force, smoothed_range_diff)，跳過此交易。")
+            return
+
+        # 動態條件調整
+        if dynamic_adjustment:
+            volatility = abs(recent_high - recent_low)  # 以最近高低價差衡量波動性
+            adjusted_buy_threshold = buy_threshold * (1 + volatility / 1000)
+            adjusted_short_threshold = short_threshold * (1 - volatility / 1000)
+        else:
+            adjusted_buy_threshold = buy_threshold
+            adjusted_short_threshold = short_threshold
+
+        # 分段條件
+        if self.sTradeSession == 0:
+            strong_trend_buy = force < -500  and smoothed_range_diff < 33
+            weak_trend_buy = force <-500  and smoothed_range_diff < 27
+            strong_trend_short = force < -700 and smoothed_range_diff < 29
+            weak_trend_short = force < -700  and smoothed_range_diff < 35
+        else:
+            strong_trend_buy = force < -300  and smoothed_range_diff < 21
+            weak_trend_buy = force <-300  and smoothed_range_diff < 17
+            strong_trend_short = force < -500 and smoothed_range_diff < 19
+            weak_trend_short = force < -500  and smoothed_range_diff < 22
+            
+        # 買入策略
+        if (predicted_return > adjusted_buy_threshold and actual_price < retrace_1 and
+            (strong_trend_buy or weak_trend_buy)):
             if self.position == 0:
+                print(f"Trend Buy triggered at {current_time}, Price: {actual_price}")
                 self.execute_trade('buy', actual_price, current_time, contracts=1)
 
         # 做空策略
-        elif predicted_return < 0 and actual_price > upper_bound:
+        elif (predicted_return < adjusted_short_threshold and actual_price > retrace_2 and
+            (strong_trend_short or weak_trend_short)):
             if self.position == 0:
+                print(f"Trend Short triggered at {current_time}, Price: {actual_price}")
                 self.execute_trade('short', actual_price, current_time, contracts=1)
+                
+        print('尚未觸發條件')
 
 
-    def trend_strategy(self, predicted_return, actual_price, current_time, buy_threshold, short_threshold, recent_high, recent_low):
-        # 计算回撤位
-        retrace_382 = recent_low + (recent_high - recent_low) * 0.382
-        retrace_618 = recent_low + (recent_high - recent_low) * 0.618
+    def oscillation_strategy(self, predicted_return, actual_price, current_time, recent_high, recent_low,
+                            speed=None, force=None, smoothed_range_diff=None, cooldown_loss_threshold=-500, cooldown_time=180,
+                            dynamic_adjustment=True):
+        """
+        優化版震盪策略，加入冷卻期邏輯、動態邊界和分段條件。
+        """
+        # 冷卻期檢查
+        if self.trade_log:
+            last_trade = self.trade_log[-1]
+            if 'profit_loss' in last_trade and last_trade['profit_loss'] is not None:
+                last_loss = last_trade['profit_loss']
+                time_since_last_trade = (current_time - pd.to_datetime(last_trade['time'])).seconds
+                if last_loss < cooldown_loss_threshold and time_since_last_trade < cooldown_time:
+                    print(f"Cooling down due to recent loss {last_loss}, Time remaining: {cooldown_time - time_since_last_trade} seconds")
+                    return  # 跳過交易
 
-        # 买入策略
-        if predicted_return > buy_threshold and actual_price < retrace_382:
+        # 動態計算上下邊界
+        if dynamic_adjustment:
+            volatility = abs(recent_high - recent_low)
+            lower_bound = recent_low + (volatility * 0.15)
+            upper_bound = recent_high - (volatility * 0.15)
+        else:
+            lower_bound = recent_low + (recent_high - recent_low) * 0.2
+            upper_bound = recent_high - (recent_high - recent_low) * 0.2
+
+        # 確保指標的完整性
+        if speed is None or force is None or smoothed_range_diff is None:
+            print("缺少必要的指標 (speed, force, smoothed_range_diff)，跳過此交易。")
+            return
+
+        # 分段條件
+        if self.sTradeSession == 0:
+            strong_oscillation_buy =  force > -600 and smoothed_range_diff < 35
+            weak_oscillation_buy = force > -600 and smoothed_range_diff < 27
+            strong_oscillation_short =  force > -700 and smoothed_range_diff < 35
+            weak_oscillation_short =  force > -700 and smoothed_range_diff < 29
+        else:
+            strong_oscillation_buy =  force > -400 and smoothed_range_diff < 18
+            weak_oscillation_buy = force > -400 and smoothed_range_diff < 16
+            strong_oscillation_short =  force > -500 and smoothed_range_diff < 21
+            weak_oscillation_short =  force > -500 and smoothed_range_diff < 18           
+
+        # 買入策略
+        if (predicted_return > 0 and actual_price < lower_bound and
+            (strong_oscillation_buy or weak_oscillation_buy)):
             if self.position == 0:
+                print(f"Oscillation Buy triggered at {current_time}, Price: {actual_price}")
                 self.execute_trade('buy', actual_price, current_time, contracts=1)
 
         # 做空策略
-        elif predicted_return < short_threshold and actual_price > retrace_618:
+        elif (predicted_return < 0 and actual_price > upper_bound and
+            (strong_oscillation_short or weak_oscillation_short)):
             if self.position == 0:
+                print(f"Oscillation Short triggered at {current_time}, Price: {actual_price}")
                 self.execute_trade('short', actual_price, current_time, contracts=1)
+                
+        print('尚未觸發條件')
+
+
 
     """
     突破策略:追高空低
@@ -609,148 +774,157 @@ class ForwardTest:
             if self.position == 0:
                 self.execute_trade('short', actual_price, current_time, contracts=1)
                 
-    def default_strategy(self, predicted_return, actual_price, current_time,
-                      buy_threshold, short_threshold):
-        
-        #當下的五分K最高與最低價格
-        high, low = self.lookback_prices[-1]['high'], self.lookback_prices[-1]['low']
-        
-        retrace_low = low + (high - low) * 0.2
-        retrace_high= low + (high - low) * 0.8
-        # 买入策略
-        if predicted_return > buy_threshold and actual_price < retrace_low:
-            if self.position == 0:
-                self.execute_trade('buy', actual_price, current_time, contracts=1)
 
-        # 做空策略
-        elif predicted_return < short_threshold and actual_price > retrace_high:
-            if self.position == 0:
-                self.execute_trade('short', actual_price, current_time, contracts=1)
-            
-        
 
-    #接收預測與即時資料
-    def run_backtest(self, predicted_return, current_time, real_time_data, 
-                     buy_threshold=0.0002, short_threshold=-0.0001,
-                     osc_window=2, contracts=1):
-        
+    def run_backtest(self, predicted_return, current_time, real_time_data,
+                    statue_indicator,
+                    buy_threshold=0.0002, short_threshold=-0.0001,
+                    osc_window=2, contracts=1):
+        """
+        執行回測並應用交易策略。
+        """
+        # 提取即時數據和指標
         actual_price = real_time_data['close']
-        high = real_time_data['high']
-        low = real_time_data['low']
-        open_price = real_time_data['open']
-        volume = real_time_data['volume']
+        high, low, open_price, volume = real_time_data['high'], real_time_data['low'], real_time_data['open'], real_time_data['volume']
+        speed, force, smoothed_range_diff, force_std = statue_indicator.values()
 
-        # 將字符串格式時間轉為 datetime.time
+
+        if not self._in_trade_window(current_time):
+            self._close_position(current_time, actual_price, reason = 'force')
+            return self.get_current_state()
+        else:
+            self._update_trailing_profit(actual_price, self.trailing_stop_pct, osc_window)
+            self._check_position_conditions(current_time, actual_price)
+            recent_high, recent_low = self._update_lookback_prices(high, low, actual_price, volume, osc_window)
+
+
+        # 檢測市場狀態
+        market_state = self.detect_market_state(speed, force, force_std, osc_window)
+        self.strategy_status.append({'Time': current_time, 'Strategy state': market_state})
+        print(f"Current Strategy: {market_state}")
+
+   
+        if market_state == 'oscillation':
+            self.apply_strategy(self.oscillation_strategy, predicted_return, actual_price, current_time, recent_high, recent_low,
+                                speed, force, smoothed_range_diff)
+            
+            self._check_oscillation_stop(current_time, actual_price, contracts)
+            
+        elif market_state == 'trend':
+            self.apply_strategy(self.trend_strategy, predicted_return, actual_price, current_time, buy_threshold, short_threshold,
+                                recent_high, recent_low, speed=speed, force=force, smoothed_range_diff=smoothed_range_diff)
+
+
+        return self.get_current_state()
+
+    # ------------------------------------------
+    # Helper functions
+    # ------------------------------------------
+
+    def _in_trade_window(self, current_time):
+        """
+        檢查當前時間是否在交易時間內。
+        """
         start_time = pd.to_datetime(self.trade_time["start_time"], format="%H:%M").time()
         end_time = pd.to_datetime(self.trade_time["end_time"], format="%H:%M").time()
-    
-        # 限制交易時間：9:00 AM 前和 1:30 PM 後
-        if current_time.time() < start_time or current_time.time() > end_time:
-            # 如果有持倉，強制平倉
-            if self.position > 0:  # 平多單
-                print(f"Force close long position at {current_time}, Price: {actual_price}")
-                self.execute_trade('sell', actual_price, current_time, contracts=self.position)
-            elif self.position < 0:  # 平空單
-                print(f"Force close short position at {current_time}, Price: {actual_price}")
-                self.execute_trade('cover', actual_price, current_time, contracts=abs(self.position))
+        if start_time < end_time:
+            return start_time <= current_time.time() <= end_time
+        else:
+            return current_time.time() >= start_time or current_time.time() <= end_time
+
+    def _close_position(self, current_time, actual_price, reason=None, contracts=None):
+        """
+        通用平仓逻辑。
+        :param reason: 平仓原因 ('force', 'stop_loss', 'trailing_profit', etc.)
+        """
+        contracts = contracts or self.position
+        if self.position > 0:
+            print(f"Close long position ({reason}) at {current_time}, Price: {actual_price}")
+            self.execute_trade('sell', actual_price, current_time, contracts=contracts, reason = reason)
+        elif self.position < 0:
+            print(f"Close short position ({reason}) at {current_time}, Price: {actual_price}")
+            self.execute_trade('cover', actual_price, current_time, contracts=abs(contracts), reason = reason)
             
-            # 阻止任何交易行為，直接返回目前狀態
-            return self.get_current_state()
-        
-        # Update historical prices for oscillation/trend detection
-        self.lookback_prices.append({'high': high, 'low': low, 'close': actual_price, 'volumne' : volume})
+
+
+   
+    def _check_position_conditions(self, current_time, actual_price):
+        """
+        检查各种条件（止损、移动停利等），触发平仓。
+        """
+        if self.position > 0:
+            if (self.entry_price - actual_price) / self.entry_price >= self.stop_loss:
+                self._close_position(current_time, actual_price, reason='stop_loss')
+            elif self.trailing_stop and actual_price <= self.trailing_stop:
+                self._close_position(current_time, actual_price, reason='trailing_profit')
+        elif self.position < 0:
+            if (actual_price - self.entry_price) / self.entry_price >= self.stop_loss:
+                self._close_position(current_time, actual_price, reason='stop_loss')
+            elif self.trailing_stop and actual_price >= self.trailing_stop:
+                self._close_position(current_time, actual_price, reason='trailing_profit')
+                
+                
+    def _update_trailing_profit(self, actual_price, trailing_stop_pct=None, osc_window = 3):
+        """
+        更新移動停利價格，確保隨著價格變化動態調整。
+        """
+        trailing_stop_pct = trailing_stop_pct or self.trailing_stop_pct
+
+        # 確保價格窗口數據足夠
+        if len(self.lookback_prices) < osc_window:
+            print(f"[Warning] Not enough data for trailing stop update. Lookback size: {len(self.lookback_prices)}")
+            return
+
+        if self.position > 0:  # 多單
+            recent_high = max([x['high'] for x in self.lookback_prices[-osc_window:]])
+            new_trailing_stop = max(self.trailing_stop or 0, recent_high * (1 - trailing_stop_pct))
+            print(f"Updating trailing stop for long: New: {new_trailing_stop}, Recent High: {recent_high}")
+            self.trailing_stop = new_trailing_stop
+
+        elif self.position < 0:  # 空單
+            recent_low = min([x['low'] for x in self.lookback_prices[-osc_window:]])
+            if self.trailing_stop is None or self.trailing_stop > recent_low * (1 + trailing_stop_pct):
+                new_trailing_stop = recent_low * (1 + trailing_stop_pct)
+            else:
+                new_trailing_stop = self.trailing_stop  # 保持之前的值
+            print(f"Updating trailing stop for short: New: {new_trailing_stop}, Recent Low: {recent_low}")
+            self.trailing_stop = new_trailing_stop
+
+            self.trailing_stop = new_trailing_stop
+
+
+    def _check_oscillation_stop(self, current_time, actual_price, contracts):
+        """
+        檢查震盪策略的停利條件。
+        """
+        if self.position > 0 and self.entry_price < actual_price:
+            if abs(self.entry_price - actual_price) / self.entry_price > 0.001:
+                print(f"Trigger Trailing Stop for oscillation (Buy -> Sell) at {current_time}, Price: {actual_price}")
+                self.trailing_stop_log.append({'Time': current_time, 'price': actual_price, 'trailing_stop_price': None})
+                self.execute_trade('sell', actual_price, current_time, contracts=self.position, reason='oscillation_stop')
+        elif self.position < 0 and self.entry_price > actual_price:
+            if abs(self.entry_price - actual_price) / self.entry_price > 0.001:
+                print(f"Trigger Trailing Stop for oscillation (Short -> Cover) at {current_time}, Price: {actual_price}")
+                self.trailing_stop_log.append({'Time': current_time, 'price': actual_price, 'trailing_stop_price': None})
+                self.execute_trade('cover', actual_price, current_time, contracts=abs(self.position) ,reason='oscillation_stop')
+
+
+    def _update_lookback_prices(self, high, low, close, volume, osc_window):
+        """
+        更新历史价格并返回窗口内的高低价。
+        """
+        self.lookback_prices.append({'high': high, 'low': low, 'close': close, 'volume': volume})
         if len(self.lookback_prices) > osc_window + 1:
             self.lookback_prices.pop(0)
 
-        # Detect market state
-        market_state = self.detect_market_state(predicted_return, actual_price, osc_window=osc_window)
+        if len(self.lookback_prices) >= osc_window:
+            recent_prices = self.lookback_prices[-osc_window:]
+            recent_high = max(recent_prices, key=lambda x: x['high'])['high']
+            recent_low = min(recent_prices, key=lambda x: x['low'])['low']
+            return recent_high, recent_low
+        else:
+            return None, None
 
-        self.strategy_status.append({'Time': current_time, 'Strategy state': market_state})
-        
-        # Print current market state
-        print(f"Current Strategy: {market_state}")
-     
-        """ 計算移動停利價格"""
-        # Dynamically update trailing stop based on position
-        if self.position and  len(self.lookback_prices) >= 2:  # Long position
-            if self.trailing_stop is None or actual_price > self.lookback_prices[-2]['high']:
-                self.trailing_stop = actual_price * (1 - self.trailing_stop_pct)
-
-        elif self.position < 0 and len(self.lookback_prices) >= 2:  # Short position
-            if self.trailing_stop is None or actual_price < self.lookback_prices[-2]['low']:
-                self.trailing_stop = actual_price * (1 + self.trailing_stop_pct)
-
-        """確認是否會出發移動停利"""
-        # Check for trailing stop conditions
-        if self.position > 0 and self.trailing_stop is not  None:  # Long trailing stop
-            if self.entry_price <= actual_price <= self.trailing_stop:
-                """即時價格需小於停利價格，且即時也得大於入場價格(確保目前是賺錢)"""
-                print(f"Trigger Trailing Stop (Buy -> Sell) at {current_time}, Price: {actual_price}")
-                self.trailing_stop_log.append({'Time':current_time,'price': actual_price,'trailing_stop_ptice':self.trailing_stop})
-                self.execute_trade('sell', actual_price, current_time, contracts=self.position)
-
-        elif self.position < 0 and self.trailing_stop is not  None:  # Short trailing stop
-            """ 即時價格需大於停利價格，且即時價格也得小於放空價格(確保目前是賺錢)"""
-            if self.entry_price >= actual_price >= self.trailing_stop: 
-                print(f"Trigger Trailing Stop (Short -> Cover) at {current_time}, Price: {actual_price}")
-                self.trailing_stop_log.append({'Time':current_time,'price': actual_price,'trailing_stop_price':self.trailing_stop})
-                self.execute_trade('cover', actual_price, current_time, contracts=abs(self.position))
-
-        """ 停損觸發機制"""
-        # Check for stop loss conditions
-        if self.position > 0:  # Long stop loss
-            if (self.entry_price - actual_price) / self.entry_price >= self.stop_loss:
-                print(f"Trigger Stop Loss (Buy -> Sell) at {current_time}, Price: {actual_price}")
-                self.stop_loss_log.append({'Time':current_time,'price': actual_price,'entry_price':self.entry_price})
-                self.execute_trade('sell', actual_price, current_time, contracts=self.position)
-
-        elif self.position < 0:  # Short stop loss
-            if (actual_price - self.entry_price) / self.entry_price >= self.stop_loss:
-                print(f"Trigger Stop Loss (Short -> Cover) at {current_time}, Price: {actual_price}")
-                self.stop_loss_log.append({'Time':current_time,'price': actual_price,'entry_price':self.entry_price})
-                self.execute_trade('cover', actual_price, current_time, contracts=abs(self.position))
-
-        """ 震盪策略停利機制"""
-        if market_state == 'oscillation':
-            # Check for trailing stop conditions
-            if self.position > 0 and self.entry_price < actual_price:  # Long trailing stop
-                if  abs(self.entry_price - actual_price) / self.entry_price > 0.0001 :
-                    print(f"Trigger Trailing Stop for oscilliation (Buy -> Sell) at {current_time}, Price: {actual_price}")
-                    self.trailing_stop_log.append({'Time':current_time,'price': actual_price,'trailing_stop_price':self.trailing_stop})
-                    self.execute_trade('sell', actual_price, current_time, contracts=self.position)
-
-
-            elif self.position < 0  and self.entry_price > actual_price:  # Short trailing stop
-                if  abs(self.entry_price - actual_price) / self.entry_price > 0.0001 :
-                    print(f"Trigger Trailing Stop for oscilliation (Short -> Cover) at {current_time}, Price: {actual_price}")
-                    self.trailing_stop_log.append({'Time':current_time,'price': actual_price,'trailing_stop_price':self.trailing_stop})
-                    self.execute_trade('cover', actual_price, current_time, contracts=abs(self.position))           
-            
- 
-
-        # Apply strategy based on detected market state
-        if market_state == 'oscillation':
-            
-            # Calculate oscillation strategy values from the window of high/low prices
-            recent_high = max(self.lookback_prices[-osc_window:-1], key=lambda x: x['high'])['high']
-            recent_low = min(self.lookback_prices[-osc_window:-1], key=lambda x: x['low'])['low']  
-                      
-            self.apply_strategy(self.oscillation_strategy, predicted_return, actual_price, current_time, recent_high, recent_low)
-            
-        elif market_state == 'trend':
-            
-            # Calculate oscillation strategy values from the window of high/low prices
-            recent_high = max(self.lookback_prices[-osc_window:-1], key=lambda x: x['high'])['high']
-            recent_low = min(self.lookback_prices[-osc_window:-1], key=lambda x: x['low'])['low']  
-                      
-            self.apply_strategy(self.trend_strategy, predicted_return, actual_price, current_time, buy_threshold, short_threshold
-                                , recent_high, recent_low)
-        
-        elif market_state == 'default':
-            
-            self.apply_strategy(self.default_strategy, predicted_return, actual_price, current_time, buy_threshold, short_threshold)
-
-        return self.get_current_state()
 
 
     def get_current_state(self):
@@ -899,152 +1073,70 @@ class ForwardTest:
             fig.canvas.draw()
             plt.pause(0.001)
 
-    def monitor_stop_loss(self, live_price_data, osc_window, predicted_return, buy_threshold, short_threshold):
+    def monitor_stop_loss(self, live_price_data, osc_window, predicted_return, buy_threshold, short_threshold,
+                        statue_indicator):
         """
-        即時監控停損條件，並根據價格自動平倉。
-        Paramter:
-            live_price_data: 即時價格 (Dataframe)
-            osc_window: 盤整窗口 (int)
-            predicted_return: 五分鐘回報率 (int)
-            
+        实时监控停损条件，并根据价格自动平仓。
         """
-        
         live_price = live_price_data['price'].iloc[-1]
         current_time = live_price_data.index[-1]
         
-        # 將字符串格式時間轉為 datetime.time
-        start_time = pd.to_datetime(self.trade_time["start_time"], format="%H:%M").time()
-        end_time = pd.to_datetime(self.trade_time["end_time"], format="%H:%M").time()
+        speed, force, smoothed_range_diff, force_std = (
+            statue_indicator['speed'],
+            statue_indicator['force'],
+            statue_indicator['smoothed_range_diff'],
+            statue_indicator['force_std'],
+        )
+
+        if not self._in_trade_window(current_time):
+            self._close_position(current_time, live_price, reason = 'force')
+            return self.get_current_state()
         
-        # 限制交易時間：9:00 AM 前和 1:30 PM 後
-        if current_time.time() < start_time or current_time.time() > end_time:
-            # 如果有持倉，強制平倉
-            if self.position > 0:  # 平多單
-                print(f"Force close long position at {current_time}, Price: {live_price}")
-                self.execute_trade('sell', live_price, current_time, contracts=self.position)
-            elif self.position < 0:  # 平空單
-                print(f"Force close short position at {current_time}, Price: {live_price}")
-                self.execute_trade('cover', live_price, current_time, contracts=abs(self.position))
+        else:
             
-            # 阻止任何交易行為，直接返回目前狀態
-            return self.get_current_state()        
+            self._update_trailing_profit(live_price, self.trailing_stop_pct, osc_window)
+            
+            # 检查持仓平仓条件
+            self._check_position_conditions(current_time, live_price)
+
+            # 震荡或趋势策略逻辑
+            recent_high, recent_low = self._get_recent_high_low(osc_window)
         
-        if self.position > 0:  # 多頭持倉
-            if (self.entry_price - live_price) / self.entry_price >= self.stop_loss:
-                print(f"Stop loss triggered for long position at price {live_price}")
-                self.stop_loss_log.append({'Time':current_time,'price': live_price,'entry_price':self.entry_price})
-                self.execute_trade('sell', live_price, current_time, contracts=self.position)
-                
-            # Check for trailing stop conditions
-            if self.trailing_stop is not  None:
-                if self.entry_price <= live_price <= self.trailing_stop:
-                    print(f"Trigger Trailing Stop (Buy -> Sell) at {current_time}, Price: {live_price}")
-                    self.trailing_stop_log.append({'Time':current_time,'price': live_price,'trailing_stop_price':self.trailing_stop})
-                    self.execute_trade('sell', live_price, current_time, contracts=self.position)
-                        
-                    
-        elif self.position < 0:  # 空頭持倉
-            if (live_price - self.entry_price) / self.entry_price >= self.stop_loss:
-                print(f"Stop loss triggered for short position at price {live_price}")
-                self.stop_loss_log.append({'Time':current_time,'price': live_price,'entry_price':self.entry_price})
-                self.execute_trade('cover', live_price, current_time, contracts=abs(self.position))
+        if recent_high is None or recent_low is None:
+            print(f"Not enough data to calculate recent high/low. Skipping strategy application.")
+            return self.get_current_state()
 
-            if self.trailing_stop is not  None:
-                if  self.entry_price >= live_price >= self.trailing_stop:
-                    print(f"Trigger Trailing Stop (Short -> Cover) at {current_time}, Price: {live_price}")
-                    self.trailing_stop_log.append({'Time':current_time,'price': live_price,'trailing_stop_price':self.trailing_stop})
-                    self.execute_trade('cover', live_price, current_time, contracts=abs(self.position))
+        if self.strategy_status and self.strategy_status[-1]['Strategy state'] == 'oscillation':
+            self.apply_strategy(self.oscillation_strategy, predicted_return, live_price, current_time, recent_high, recent_low, speed, force, smoothed_range_diff)
 
-        """ 震盪策略停利機制"""
-        if self.strategy_status[-1]['Strategy state'] == 'oscillation':
+            self._check_oscillation_stop(current_time, live_price, contracts = 1)
             
-            # Calculate oscillation strategy values from the window of high/low prices
-            recent_high = max(self.lookback_prices[-osc_window:-1], key=lambda x: x['high'])['high']
-            recent_low = min(self.lookback_prices[-osc_window:-1], key=lambda x: x['low'])['low']
-           
-            #偵測是否突然突破以便隨時轉換狀態
-            self.live_adjust_strategy(live_price, current_time, recent_high, recent_low, predicted_return)
-                 
-            # Check for trailing stop conditions
-            if self.position > 0 and self.entry_price < live_price:  # Long trailing stop
-                              
-                if  abs(self.entry_price - live_price) / self.entry_price > 0.001 :
-                    print(f"Trigger Trailing Stop for oscilliation (Buy -> Sell) at {current_time}, Price: {live_price}")
-                    self.trailing_stop_log.append({'Time':current_time,'price': live_price,'trailing_stop_price':self.trailing_stop})
-                    self.execute_trade('sell', live_price, current_time, contracts=self.position)
+        elif self.strategy_status and self.strategy_status[-1]['Strategy state'] == 'trend':
+            self.apply_strategy(self.trend_strategy, predicted_return, live_price, current_time, buy_threshold, short_threshold, recent_high, recent_low, 
+                                speed=speed, force=force, smoothed_range_diff=smoothed_range_diff)
 
+        return self.get_current_state()        
 
-            elif self.position < 0  and self.entry_price > live_price:  # Short trailing stop
-                                
-                if  abs(self.entry_price - live_price) / self.entry_price > 0.001 :
-                    
-                    print(f"Trigger Trailing Stop for oscilliation (Short -> Cover) at {current_time}, Price: {live_price}")
-                    self.trailing_stop_log.append({'Time':current_time,'price': live_price,'trailing_stop_price':self.trailing_stop})
-                    self.execute_trade('cover', live_price, current_time, contracts=abs(self.position))           
-                       
-        if self.position == 0 and self.strategy_status[-1]['Strategy state'] == 'oscillation':
-            # Calculate oscillation strategy values from the window of high/low prices
-            recent_high = max(self.lookback_prices[-osc_window:-1], key=lambda x: x['high'])['high']
-            recent_low = min(self.lookback_prices[-osc_window:-1], key=lambda x: x['low'])['low']  
-                      
-            self.apply_strategy(self.oscillation_strategy, predicted_return, live_price, current_time, recent_high, recent_low) 
+    # 辅助函数：获取最近窗口内的高低价格
+    def _get_recent_high_low(self, osc_window):
+        """
+        获取最近窗口内的最高和最低价格。
+        """
+        if len(self.lookback_prices) < osc_window:
+            print(f"Not enough data in lookback_prices. Required: {osc_window}, Available: {len(self.lookback_prices)}")
+            return None, None
 
-        # Apply strategy based on detected market state
-        if self.strategy_status[-1]['Strategy state'] == 'oscillation':
-            
-            # Calculate oscillation strategy values from the window of high/low prices
-            recent_high = max(self.lookback_prices[-osc_window:-1], key=lambda x: x['high'])['high']
-            recent_low = min(self.lookback_prices[-osc_window:-1], key=lambda x: x['low'])['low']  
-                      
-            self.apply_strategy(self.oscillation_strategy, predicted_return, live_price, current_time, recent_high, recent_low)
-            
-        elif self.strategy_status[-1]['Strategy state'] == 'trend':
-            
-            # Calculate oscillation strategy values from the window of high/low prices
-            recent_high = max(self.lookback_prices[-osc_window:-1], key=lambda x: x['high'])['high']
-            recent_low = min(self.lookback_prices[-osc_window:-1], key=lambda x: x['low'])['low']  
-                      
-            self.apply_strategy(self.trend_strategy, predicted_return, live_price, current_time, buy_threshold, short_threshold, 
-                                recent_high, recent_low)
-        
-        elif self.strategy_status[-1]['Strategy state'] == 'default':
-            
-            self.apply_strategy(self.default_strategy, predicted_return, live_price, current_time, buy_threshold, short_threshold)
-         
-        return self.get_current_state()
-    
-    #即時調製策略
-    def live_adjust_strategy(self, live_price , current_time, recent_high, recent_low, predicted_return):
-        
-        """如果盤整趨勢被打破就切換成趨勢策略"""
-        if  self.strategy_status[-1]['Strategy state'] == 'oscillation' and self.position ==0 :
-            
-            if self.profit_loss_log[-1]['profit_loss']:
-                
-                self.strategy_status.append({'Time': current_time, 'Strategy state': 'trend'})
-                
-                """搶突破"""
-                self.apply_strategy(self.breakout_strategy, predicted_return, live_price, current_time, 
-                                recent_high, recent_low)                
-                
-            elif recent_high < live_price or recent_low > live_price :
-                self.strategy_status.append({'Time': current_time, 'Strategy state': 'trend'})
-                
-                """搶突破"""
-                self.apply_strategy(self.breakout_strategy, predicted_return, live_price, current_time, 
-                                recent_high, recent_low)
-                
-        elif recent_high < live_price or recent_low > live_price : 
-            
-            self.strategy_status.append({'Time': current_time, 'Strategy state': 'trend'})            
-
+        recent_prices = self.lookback_prices[-osc_window:]
+        recent_high = max(recent_prices, key=lambda x: x['high'])['high']
+        recent_low = min(recent_prices, key=lambda x: x['low'])['low']
+        return recent_high, recent_low
             
     def summary_table(self):
         """
         輸出總交易次數、總損益、總手續費、勝率、總平倉數量和賺賠比的摘要表。
         """
         total_trades = len(self.trade_log)
-        total_profit_loss = sum(trade.get('profit_loss', 0) for trade in self.profit_loss_log if 'profit_loss' in trade) - self.total_transaction_fees
+        total_profit_loss = sum(trade.get('profit_loss', 0) for trade in self.profit_loss_log if 'profit_loss' in trade)
         total_fees = self.total_transaction_fees
         
         winning_trades = sum(1 for trade in self.profit_loss_log if 'profit_loss' in trade and trade['profit_loss'] > 0)
@@ -1061,69 +1153,80 @@ class ForwardTest:
         })
         print(summary_df)
 
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
 class RealtimeSpeedForceIndicators:
-    def __init__(self, speed_window=5, force_window=5, range_window=5):
-        """
-        Initialize the strategy with specific rolling window sizes.
-        :param speed_window: Window size for speed calculation.
-        :param force_window: Window size for force calculation.
-        :param range_window: Window size for smoothed range_diff calculation.
-        """
+    def __init__(self, speed_window=5, force_window=5, range_window=5, max_allowed_std=10000, extreme_threshold=5000):
         self.speed_window = speed_window
         self.force_window = force_window
         self.range_window = range_window
-        self.data = pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume', 'speed', 'force', 'smoothed_range_diff'])
+        self.max_allowed_std = max_allowed_std
+        self.extreme_threshold = extreme_threshold
+
+        self.data = pd.DataFrame(columns=[
+            'datetime', 'open', 'high', 'low', 'close', 'volume',
+            'speed', 'force', 'smoothed_range_diff', 'force_std'
+        ])
 
     def add_new_data(self, new_data):
         """
-        Add new data to the strategy and calculate indicators.
-        :param new_data: A DataFrame containing the latest data row(s).
+        添加新數據，並自動處理數據格式問題。
         """
-        required_columns = ['open', 'high', 'low', 'close', 'volume']
+        required_columns = ['datetime', 'open', 'high', 'low', 'close', 'volume']
 
-        # Ensure new_data contains the required columns
-        if not all(col in new_data.columns for col in required_columns):
-            raise ValueError(f"Input data must contain columns: {required_columns}")
+        # 如果索引名稱為 'Datetime'，將其重置為列並重命名為 'datetime'
+        if new_data.index.name == 'Datetime':
+            new_data = new_data.reset_index()
+            new_data.rename(columns={'Datetime': 'datetime'}, inplace=True)
 
-        # Select only required columns from new_data
+        # 確保 datetime 列存在
+        if 'datetime' not in new_data.columns:
+            raise ValueError("Input data must have a 'datetime' column or DatetimeIndex.")
+
+        # 確保 datetime 列是日期時間格式
+        new_data['datetime'] = pd.to_datetime(new_data['datetime'], errors='coerce')
+        new_data.dropna(subset=['datetime'], inplace=True)
+
+        # 檢查並提取必要的欄位
+        missing_columns = [col for col in required_columns if col not in new_data.columns]
+        if missing_columns:
+            raise ValueError(f"Input data is missing required columns: {missing_columns}")
+
+        # 選取必要欄位
         filtered_data = new_data[required_columns].copy()
 
-        # Append the new filtered data
+        # 排序數據
+        filtered_data.sort_values('datetime', inplace=True)
+
+        # 合併數據
         self.data = pd.concat([self.data, filtered_data], ignore_index=True)
 
-        # Calculate speed (close price difference)
+        # 計算技術指標
         self.data['speed'] = self.data['close'].diff()
+        self.data['price_diff'] = self.data['close'].diff()
+        self.data['price_acceleration'] = self.data['price_diff'].diff()
+        self.data['force'] = self.data['price_acceleration'] * self.data['volume']
 
-        # Calculate force (second derivative of volume)
-        self.data['volume_diff'] = self.data['volume'].diff()
-        self.data['force'] = self.data['volume_diff'].diff()
+        self.data['force_std'] = self.data['force'].rolling(window=self.force_window, min_periods=1).std()
 
-        # Calculate range_diff (high-low difference)
         self.data['range_diff'] = self.data['high'] - self.data['low']
-
-        # Smooth range_diff using a rolling window
         self.data['smoothed_range_diff'] = (
             self.data['range_diff']
             .rolling(window=self.range_window, min_periods=1)
             .mean()
         )
 
-        # Replace all NaN values with 0
+        # 填充 NaN 值
         self.data.fillna(0, inplace=True)
+
+
 
     def get_latest_indicators(self):
         """
-        Get the latest calculated indicators.
-        :return: A dictionary containing the latest speed, force, and smoothed range_diff.
-        
-        speed > 0 and force > 0   and smoothed_range_diff < volatility_limit => Long
-        
-        Buy if the current price is closer to the retracement levels (e.g., 38.2% Fibonacci retracement).
-        
-        speed < 0 and force < 0   and smoothed_range_diff < volatility_limit => Short
-        
-        Short if the current price is closer to the retracement levels (e.g., 61.8% Fibonacci retracement)
-        
+        獲取最新計算的指標。
+        :return: 包含最新 speed, force, smoothed_range_diff, 和 force_std 的字典。
         """
         if not self.data.empty:
             latest_row = self.data.iloc[-1]
@@ -1131,8 +1234,168 @@ class RealtimeSpeedForceIndicators:
                 'speed': latest_row.get('speed', 0),
                 'force': latest_row.get('force', 0),
                 'smoothed_range_diff': latest_row.get('smoothed_range_diff', 0),
+                'force_std': latest_row.get('force_std', 0),
             }
-        return {'speed': 0, 'force': 0, 'smoothed_range_diff': 0}
+        return {'speed': 0, 'force': 0, 'smoothed_range_diff': 0, 'force_std': 0}
+
+    def get_full_data(self):
+        """
+        獲取完整的數據框，包含所有計算的指標。
+        :return: 包含所有數據和指標的 DataFrame。
+        """
+        return self.data.copy()
+
+    def determine_thresholds_from_history(self, force_std_multiplier=1.5, range_quantiles=(0.25, 0.75),
+                                          trend_quantile=0.9, time_segments=None):
+        if self.data.empty:
+            raise ValueError("No historical data to determine thresholds.")
+
+        df = self.data
+        thresholds_by_segment = {}
+        if time_segments is None:
+            thresholds_by_segment['default'] = self._calculate_thresholds_for_df(
+                df, force_std_multiplier, range_quantiles, trend_quantile
+            )
+        else:
+            for segment_name, (start_str, end_str) in time_segments.items():
+                start_t = pd.to_datetime(start_str, format='%H:%M').time()
+                end_t = pd.to_datetime(end_str, format='%H:%M').time()
+
+                if end_t < start_t:
+                    mask = (df['datetime'].dt.time >= start_t) | (df['datetime'].dt.time <= end_t)
+                else:
+                    mask = (df['datetime'].dt.time >= start_t) & (df['datetime'].dt.time <= end_t)
+
+                segment_df = df.loc[mask]
+
+                if len(segment_df) < 10:
+                    thresholds_by_segment[segment_name] = None
+                else:
+                    thresholds_by_segment[segment_name] = self._calculate_thresholds_for_df(
+                        segment_df, force_std_multiplier, range_quantiles, trend_quantile
+                    )
+
+        return thresholds_by_segment
+
+    def _clip_and_limit_value(self, value, lower_percentile=0.1, upper_percentile=0.9, max_limit=None):
+        lower_bound = value.quantile(lower_percentile)
+        upper_bound = value.quantile(upper_percentile)
+        clipped_value = value.clip(lower=lower_bound, upper=upper_bound)
+
+        if max_limit:
+            clipped_value = clipped_value.apply(lambda x: min(x, max_limit))
+        return clipped_value
+
+    def _calculate_thresholds_for_df(self, df, force_std_multiplier, range_quantiles, trend_quantile):
+        force_std_series = df['force_std'].dropna()
+        force_series = df['force'].dropna()
+        speed_series = df['speed'].dropna()
+
+        if len(force_series) < 10 or len(speed_series) < 10:
+            raise ValueError("Not enough data in this segment to determine thresholds.")
+
+        force_std_series = self._clip_and_limit_value(force_std_series, 0.1, 0.9, self.max_allowed_std)
+        force_series = self._clip_and_limit_value(force_series, 0.1, 0.9)
+        speed_series = self._clip_and_limit_value(speed_series, 0.1, 0.9)
+
+        force_std_mean = force_std_series.mean()
+        force_std_std = force_std_series.std(ddof=1)
+
+        adjusted_multiplier = force_std_multiplier
+        if force_std_std > self.extreme_threshold:
+            adjusted_multiplier = force_std_multiplier / 2
+
+        osc_force_std = min(force_std_mean + adjusted_multiplier * force_std_std, self.max_allowed_std)
+
+        low_q, high_q = range_quantiles
+        force_low, force_high = force_series.quantile([low_q, high_q])
+        speed_low, speed_high = speed_series.quantile([low_q, high_q])
+
+        trend_force_up = force_series.quantile(trend_quantile)
+        trend_force_down = force_series.quantile(1 - trend_quantile)
+        trend_speed_up = speed_series.quantile(trend_quantile)
+        trend_speed_down = speed_series.quantile(1 - trend_quantile)
+
+        return {
+            'osc_force_std': osc_force_std,
+            'osc_force_range': (force_low, force_high),
+            'osc_speed_range': (speed_low, speed_high),
+            'trend_force_threshold_up': trend_force_up,
+            'trend_speed_threshold_up': trend_speed_up,
+            'trend_force_threshold_down': trend_force_down,
+            'trend_speed_threshold_down': trend_speed_down
+        }
+
+    def plot_thresholds(self, thresholds):
+        """
+        將指標與計算出的閾值進行可視化。
+        """
+        if self.data.empty:
+            raise ValueError("No data to plot.")
+
+        plt.figure(figsize=(15, 10))
+
+        # Plot force_std
+        plt.subplot(3, 1, 1)
+        plt.plot(self.data['datetime'], self.data['force_std'], label='force_std')
+        plt.axhline(y=thresholds['osc_force_std'], color='r', linestyle='--', label='osc_force_std')
+        plt.legend()
+        plt.title('Force Std with Thresholds')
+
+        # Plot force
+        plt.subplot(3, 1, 2)
+        plt.plot(self.data['datetime'], self.data['force'], label='force')
+        plt.axhline(y=thresholds['osc_force_range'][0], color='g', linestyle='--', label='Force Low')
+        plt.axhline(y=thresholds['osc_force_range'][1], color='r', linestyle='--', label='Force High')
+        plt.legend()
+        plt.title('Force with Oscillation Range')
+
+        # Plot speed
+        plt.subplot(3, 1, 3)
+        plt.plot(self.data['datetime'], self.data['speed'], label='speed')
+        plt.axhline(y=thresholds['osc_speed_range'][0], color='g', linestyle='--', label='Speed Low')
+        plt.axhline(y=thresholds['osc_speed_range'][1], color='r', linestyle='--', label='Speed High')
+        plt.legend()
+        plt.title('Speed with Oscillation Range')
+
+        plt.tight_layout()
+        plt.show()
+
+
 
     
+# # 初始化類別
+# indicator = RealtimeSpeedForceIndicators(max_allowed_std=50000)
+
+# # 添加測試數據
+# indicator.add_new_data(data_test)
+
+# # 定義時間段
+# time_segments = {
+#     'morning': ('09:00', '11:30'),
+#     'night': ('18:00', '04:00')
+# }
+
+# # 計算每個時間段的閾值
+# thresholds = indicator.determine_thresholds_from_history(
+#     force_std_multiplier=1.5,
+#     range_quantiles=(0.25, 0.75),
+#     trend_quantile=0.9,
+#     time_segments=time_segments
+# )
+
+# # 輸出每個時段的閾值
+# for segment, threshold in thresholds.items():
+#     print(f"Time Segment: {segment}")
+#     if threshold:
+#         for key, value in threshold.items():
+#             print(f"  {key}: {value}")
+#     else:
+#         print("  Not enough data for this segment.")
+#     print()
     
+# # 為每個時間段的數據繪製圖像
+# for segment, threshold in thresholds.items():
+#     if threshold:
+#         print(f"Plotting for {segment} segment...")
+#         indicator.plot_thresholds(threshold)

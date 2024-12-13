@@ -11,35 +11,33 @@ import comtypes
 # 更新 api 版本時，記得將 comtypes.gen 資料夾 SKCOMLib 相關檔案刪除，再重新呼叫 GetModule 
 cc.GetModule(r'C:\Users\user\OneDrive - Lehigh University\Desktop\investment\CapitalAPI_2.13.51_PythonExample\CapitalAPI_2.13.51_PythonExample\元件\x64\SKCOM.dll')
 import comtypes.gen.SKCOMLib as sk
-# %%
+
 # login ID and PW
 # 身份證
-ID = ''
+ID = 'F130659713'
 # 密碼
-PW = ''
+PW = 'eric1234'
 print(datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S,"), 'Set ID and PW')
 
 
      # 建立 event pump and event loop
 # 新版的jupyterlab event pump 機制好像有改變，因此自行打造一個 event pump機制，
 # 目前在 jupyterlab 環境下使用，也有在 spyder IDE 下測試過，都可以正常運行
-# %%
+
 # working functions, async coruntime to pump events
 async def pump_task():
     '''在背景裡定時 pump windows messages'''
     while True:
         pythoncom.PumpWaitingMessages()
         # 想要反應更快 可以將 0.1 取更小值
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(10)
 
-# %%
+#
 # get an event loop
 loop = asyncio.get_event_loop()
 pumping_loop = loop.create_task(pump_task())
 print(datetime.datetime.now().strftime("%Y/%m/%d %H:%M:%S,"), "Event pumping is ready!")
 
-# %%
-# %%
 # 建立物件，避免重複 createObject
 # 登錄物件
 if 'skC' not in globals(): 
@@ -75,57 +73,11 @@ import warnings
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
-
 # Set device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-# class ResidualLSTMModel(nn.Module):
-#     def __init__(self, input_size, hidden_size, output_size, num_layers=3):
-#         super(ResidualLSTMModel, self).__init__()
-#         self.lstm1 = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-#         self.lstm2 = nn.LSTM(hidden_size, hidden_size, num_layers, batch_first=True)
-#         self.dropout = nn.Dropout(0.3)
-#         self.fc = nn.Linear(hidden_size, output_size)
-
-#     def forward(self, x):
-#         batch_size = x.size(0)
-#         h_0 = torch.zeros(self.lstm1.num_layers, batch_size, self.lstm1.hidden_size).to(x.device)
-#         c_0 = torch.zeros(self.lstm1.num_layers, batch_size, self.lstm1.hidden_size).to(x.device)
-
-#         out1, _ = self.lstm1(x, (h_0, c_0))
-        
-#         h_0_2 = torch.zeros(self.lstm2.num_layers, batch_size, self.lstm2.hidden_size).to(x.device)
-#         c_0_2 = torch.zeros(self.lstm2.num_layers, batch_size, self.lstm2.hidden_size).to(x.device)
-#         out2, _ = self.lstm2(out1, (h_0_2, c_0_2))
-
-#         # Residual connection
-#         residual = x[:, -1, :]  # Taking the last step for residual connection
-#         if residual.size(1) > out2.size(2):
-#             residual = residual[:, :out2.size(2)]  # Trim residual dimensions to match LSTM output dimensions
-#         elif residual.size(1) < out2.size(2):
-#             padding = torch.zeros((batch_size, out2.size(2) - residual.size(1))).to(x.device)
-#             residual = torch.cat((residual, padding), dim=1)  # Pad residual dimensions to match LSTM output dimensions
-#         out = out2[:, -1, :] + residual  # Add input as residual
-        
-#         out = self.dropout(out)
-#         out = self.fc(out)
-#         return out
-
-# # Load trained models and scalers
-# import dill
-
-# with open('TX_1min_model_5.pkl', 'rb') as f:
-#     saved_data = dill.load(f)
-
-# lstm_model = saved_data['lstm_model']
-# lgbm_model = saved_data['lgbm_model']
-# ensemble_model = saved_data['ensemble_model']
-# scaler_X = saved_data['scaler_X']
-# scaler_y = saved_data['scaler_y']
-
-
-data = pd.read_excel(r"C:\Users\user\OneDrive - Lehigh University\Desktop\investment\python\API\TX00\TX00_5_20241101_20241209.xlsx")
+data = pd.read_excel(r"C:\Users\user\OneDrive - Lehigh University\Desktop\investment\python\API\TX00\TX00_5_20241101_20241212.xlsx")
 data = data.set_index('date')
 # 刪除包含零的列（行）
 data = data.loc[~(data == 0).any(axis=1)]
@@ -133,7 +85,7 @@ data = data.loc[~(data == 0).any(axis=1)]
 filter_name = pd.read_excel("highly_correlated_features.xlsx")
 filter_name = filter_name["Highly Correlated Features"].to_list()
 
-data_test=data['2024-11-20':'2024-12-09']
+data_test=data['2024-11-20':'2024-12-12']
 
 # %%
 #Quote event class
@@ -145,7 +97,7 @@ import joblib
 from sklearn.exceptions import NotFittedError
 import dill
 import requests
-from back_testing.Backtest import ForwardTest
+from back_testing.Backtest import ForwardTest, RealtimeSpeedForceIndicators
 
 #%%
 class skQ_event:
@@ -181,7 +133,7 @@ class skQ_event:
             with open('TX_1min_model_5.pkl', 'rb') as f:
                 saved_data = dill.load(f)
             self.lstm_model = saved_data['lstm_model']
-            self.tcn_model = saved_data['tcn_model']
+            self.lgbm_model = saved_data['lgbm_model']
             self.ensemble_model = saved_data['ensemble_model']
             self.scaler_X = saved_data['scaler_X']
             self.scaler_y = saved_data['scaler_y']
@@ -327,10 +279,37 @@ class skQ_event:
                 update_row_num = new_data.shape[0] - self.len
                 
                 if update_row_num ==1:
-                    self.backtest = ForwardTest(initial_balance=200000, transaction_fee=30, margin_rate=0.1, 
-                                           stop_loss=0.0005, trailing_stop_pct=0.001, point_value=50,
-                                           data_folder= "trading", symbol= "TX00",
-                                           start_time="00:00",end_time="23:59")
+                    
+                    #Add identifying indicator
+                    self.ForceIndicator = RealtimeSpeedForceIndicators(speed_window=3, 
+                                                                    force_window=3, 
+                                                                    range_window=3,
+                                                                   max_allowed_std=50000)      
+                    self.ForceIndicator.add_new_data(self.data_test)
+                    
+                    
+                    time_segments = {
+                        'morning': ('08:45', '13:30'),
+                        'night': ('15:00', '05:00')
+                    }
+
+                    #Threshold I
+                    thresholds = self.ForceIndicator.determine_thresholds_from_history(
+                        force_std_multiplier=1.2,
+                        range_quantiles=(0.25, 0.75),
+                        trend_quantile=0.6,
+                        time_segments=time_segments
+                    )                   
+                    
+                    for segment, threshold in thresholds.items():
+                        if threshold:
+                            print(f"Plotting for {segment} segment...")
+                            self.ForceIndicator.plot_thresholds(threshold)    
+                                                                                                   
+                    self.backtest = ForwardTest(initial_balance=200000, transaction_fee=90, margin_rate=0.1, 
+                                           stop_loss=0.001, trailing_stop_pct=0.002, point_value=200,
+                                           data_folder= "trading", symbol= "TX00", thresholds_by_segment= thresholds)
+                 
                     self.backtest.load_trading_files()
                     
 
@@ -358,6 +337,13 @@ class skQ_event:
                 y = data_done2[['open', 'high', 'low', 'close', 'volume']]
                 X = data_done2.drop(columns=['close'])
                 
+                # 計算速度,力量與波動
+                self.ForceIndicator.add_new_data(y[-100:])
+                
+                self.FMV = self.ForceIndicator.get_latest_indicators()
+                
+
+                
                 # X = X.replace([np.inf, -np.inf], np.nan).dropna(axis=1, how='any')
 
                 # 添加日期特徵
@@ -379,36 +365,30 @@ class skQ_event:
                 new_input_tensor = torch.tensor(new_input_scaled, dtype=torch.float32).to(device)
 
                 # LightGBM 模型預測
-                # prediction_lgbm_scaled = self.lgbm_model.predict(new_input_scaled).reshape(-1, 1)
-                # prediction_lgbm = self.scaler_y.inverse_transform(prediction_lgbm_scaled)
+                prediction_lgbm_scaled = self.lgbm_model.predict(new_input_scaled).reshape(-1, 1)
+                prediction_lgbm = self.scaler_y.inverse_transform(prediction_lgbm_scaled)
 
                 with torch.no_grad():
                     prediction_lstm_scaled = self.lstm_model(new_input_tensor).cpu().numpy()
 
                 # 解縮放 LSTM 預測結果
-                prediction_lstm = self.scaler_y.inverse_transform(prediction_lstm_scaled)
-                
-                new_input_tensor = new_input_tensor.unsqueeze(2)
-                
-                self.tcn_model.eval()
-                with torch.no_grad():
-                    prediction_tcn_scaled = self.tcn_model(new_input_tensor).cpu().numpy()               
-                              
-                prediction_tcn = self.scaler_y.inverse_transform(prediction_tcn_scaled)
+                prediction_lstm = self.scaler_y.inverse_transform(prediction_lstm_scaled)                             
+                prediction_lgbm = self.scaler_y.inverse_transform(prediction_lgbm_scaled)
 
                 # 集成模型預測
-                ensemble_input = np.hstack((prediction_lstm, prediction_tcn))
+                ensemble_input = np.hstack((prediction_lstm, prediction_lgbm))
                 prediction_ensemble = self.ensemble_model.predict(ensemble_input)
 
                 # 動態報告預測結果
                 self.report_prediction(prediction_lstm[-1].flatten())
-                self.report_prediction(prediction_tcn[-1].flatten())
+                self.report_prediction(prediction_lgbm[-1].flatten())
                 self.report_prediction(prediction_ensemble[-1].flatten())
                                
                 # Plot actual vs predicted values
                 plt.figure(figsize=(14, 8))
-                # plt.plot(X.tail(update_row_num).index ,prediction_lstm, label='Predict (LSTM)', color='blue')
+                plt.plot(X.tail(update_row_num).index ,prediction_lstm, label='Predict (LSTM)', color='blue')
                 plt.plot(X.tail(update_row_num).index ,prediction_ensemble, label='Predict (Ensemble)', color='black')
+                plt.plot(X.tail(update_row_num).index ,prediction_lgbm, label='Predict (TCN)', color='black')
                 #plt.plot(X.tail(i+1).index, data_done2['close'].tail(i+1), label='Acutal', color='orange')
                 plt.xlabel('Index')
                 plt.ylabel('Return Rate')
@@ -417,15 +397,16 @@ class skQ_event:
                 plt.show()
                 
                 # 計算預測回報率
-                self.predicted_returns = pd.Series(prediction_lstm.flatten())
+                self.predicted_returns = pd.Series(prediction_ensemble.flatten())
 
                 # 使用保證金、停損、移動停利以及多/空倉進行回測
                 self.bot = self.backtest.run_backtest(predicted_return = self.predicted_returns.iloc[update_row_num-1], 
                                                    real_time_data = y.iloc[self.len+update_row_num-1],
                                                     current_time=y.index[self.len+update_row_num-1],
+                                                    statue_indicator=self.FMV,
                                                     buy_threshold=0.0002,
-                                                    short_threshold=-0.0005,
-                                                    osc_window = 6)
+                                                    short_threshold=-0.0004,
+                                                    osc_window = 3)
 
                  #機器人操作開始，才開啟報價監視器
                 self.live_price_monitor()
@@ -460,10 +441,11 @@ class skQ_event:
         if not self.predicted_returns.empty:
             print("監測中")
             self.backtest.monitor_stop_loss(live_price_data=live_price,
-                                        osc_window=6,
+                                        osc_window=3,
                                         predicted_return=self.predicted_returns.iloc[-1],
                                         buy_threshold=0.0002,
-                                        short_threshold=-0.0005)
+                                        short_threshold=-0.0005,
+                                        statue_indicator=self.FMV)
         else:
             print("尚未有預測值")
             
@@ -506,7 +488,7 @@ class skR_events:
 # 創建 skQ_event 的實例，並傳遞外部歷史數據
 EventQ = skQ_event(data_test)
 EventR = skR_events()
-# %%
+
 # 建立 event 跟 event handler 的連結
 ConnOSQ = cc.GetEvents(skQ, EventQ)
 ConnR = cc.GetEvents(skR, EventR)
@@ -516,11 +498,11 @@ ConnR = cc.GetEvents(skR, EventR)
 print('Login', skC.SKCenterLib_GetReturnCodeMessage(skC.SKCenterLib_Login(ID,PW)))
 
 
-# %%
 nCode = skQ.SKQuoteLib_EnterMonitorLONG()
 print("SKOSQuoteLib_EnterMonitor", skC.SKCenterLib_GetReturnCodeMessage(nCode))
 #%%
 nCode = skQ.SKQuoteLib_RequestLiveTick(-1,'TX00')
+
 
 print("SKQuoteLib_RequestTicks", skC.SKCenterLib_GetReturnCodeMessage(nCode[1]))
 #%%
@@ -655,7 +637,7 @@ class Scraping_HistKline():
 
 test = Scraping_HistKline()
 #%%
-time_list = {'time1':["20241101", "20241209"]}
+time_list = {'time1':["20241101", "20241212"]}
 min_str = [1,5,60]
 
 for time in time_list:
